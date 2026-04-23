@@ -1,0 +1,38 @@
+# --- Datos y Almacenamiento ---
+# Ignorar carpeta de datos
+data/
+# Ignorar todos los archivos .parquet y .txt en cualquier nivel
+*.parquet
+*.txt
+# Exceptuando quizás un archivo de texto específico si fuera necesario
+# !info.txt
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+env/
+.env
+
+# --- Jupyter Notebooks ---
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# --- IDEs y Editores ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- Sistema Operativo ---
+.DS_Store
+Thumbs.db
+
+# --- Reportes y Logs ---
+*.log
+nosetests.xml
+coverage.xml
+htmlcov/
