@@ -6,6 +6,7 @@ data/
 *.txt
 # Exceptuando quizás un archivo de texto específico si fuera necesario
 # !info.txt
+!reporte_relevancia_optimizacion.txt
 
 # --- Python ---
 __pycache__/

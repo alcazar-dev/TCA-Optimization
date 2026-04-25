@@ -1,0 +1,588 @@
+====================================================
+REPORTE FILTRADO: COLUMNAS RELEVANTES PARA OPTIMIZACIÓN
+====================================================
+
+RESUMEN DE RELEVANCIA POR TABLA:
+- HOTHSP: Crítico: Define el universo de trabajo (estatus 50/10) y ventanas de tiempo (h_hra_lld).
+- HOTSTP: Semáforo: Alimenta la disponibilidad visual del sistema.
+- HOTHAB: Operativo: Define ubicación física (piso/edificio) y factores de limpieza (cuna/fac_ama).
+- HOTCTH: Prioridad: Proxy de complejidad de limpieza por tipo de habitación.
+- HOTREQ: Especiales: Requerimientos específicos (R/B/E) que afectan el bloque horario.
+- HOTFBL: Bloqueos: Define prioridad automática si el bloqueo viene de Recepción.
+- HOTVTA: Predicción: Serie temporal para entrenamiento de modelos SARIMA/Prophet.
+- HOTEST: Ground Truth: Validación de ocupación real vs disponible.
+
+====================================================
+
+CONFLICTOS DE TIPO EN TABLAS CLAVE (0)
+
+
+ SIMILITUDES EN TABLAS CLAVE (Menor a Mayor)
+[70%] hotcth.tpo_hab (VARCHAR) <-> hothsp.h_tpo_hab_tfa (VARCHAR)
+  Desc 1: Tipo de Habitacion
+  Desc 2: si no esta en blanco aplica para renta
+..............................
+[70%] hotcth.tpo_hab (VARCHAR) <-> hothsp.h_tpo_hab_fac (VARCHAR)
+  Desc 1: Tipo de Habitacion
+  Desc 2: N/A
+..............................
+[70%] hotcth.tpo_hab (VARCHAR) <-> hothsp.h_apa_tpo_hab (VARCHAR)
+  Desc 1: Tipo de Habitacion
+  Desc 2: N/A
+..............................
+[70%] hotest.tpo_hab (VARCHAR) <-> hothsp.h_tpo_hab_tfa (VARCHAR)
+  Desc 1: N/A
+  Desc 2: si no esta en blanco aplica para renta
+..............................
+[70%] hotest.tpo_hab (VARCHAR) <-> hothsp.h_tpo_hab_fac (VARCHAR)
+  Desc 1: N/A
+  Desc 2: N/A
+..............................
+[70%] hotest.tpo_hab (VARCHAR) <-> hothsp.h_apa_tpo_hab (VARCHAR)
+  Desc 1: N/A
+  Desc 2: N/A
+..............................
+[70%] hotfbl.num_hab (VARCHAR) <-> hothsp.h_apa_num_hab (VARCHAR)
+  Desc 1: NUMERO DE HABITACION
+  Desc 2: N/A
+..............................
+[70%] hotfbl.tpo_hab (VARCHAR) <-> hothsp.h_tpo_hab_tfa (VARCHAR)
+  Desc 1: TIPO DE HABITACION
+  Desc 2: si no esta en blanco aplica para renta
+..............................
+[70%] hotfbl.tpo_hab (VARCHAR) <-> hothsp.h_tpo_hab_fac (VARCHAR)
+  Desc 1: TIPO DE HABITACION
+  Desc 2: N/A
+..............................
+[70%] hotfbl.tpo_hab (VARCHAR) <-> hothsp.h_apa_tpo_hab (VARCHAR)
+  Desc 1: TIPO DE HABITACION
+  Desc 2: N/A
+..............................
+[70%] hothab.c_des_cta (VARCHAR) <-> hotstp.o_des_corto (VARCHAR)
+  Desc 1: DESCRIPCION CORTA
+  Desc 2: Descripcion corta
+..............................
+[70%] hothab.c_cve_res (VARCHAR) <-> hotvta.cto_noc_res (BIGINT)
+  Desc 1: CLAVE DE RESERVACION
+  Desc 2: HABITACIONES VENDIDAS CON RESERVA
+..............................
+[70%] hothsp.h_codigo_tar (VARCHAR) <-> hottra.t_codigo (VARCHAR)
+  Desc 1: Codigo Seguridad Tarjeda Cred.
+  Desc 2: CODIGO DE TRANSACCION
+..............................
+[70%] hothsp.h_tpo_hab_tfa (VARCHAR) <-> hotvta.tpo_hab (VARCHAR)
+  Desc 1: si no esta en blanco aplica para renta
+  Desc 2: TIPO DE HABITACION
+..............................
+[70%] hothsp.h_tpo_hab_fac (VARCHAR) <-> hotvta.tpo_hab (VARCHAR)
+  Desc 1: N/A
+  Desc 2: TIPO DE HABITACION
+..............................
+[70%] hothsp.h_tfa_agencia (DOUBLE) <-> hotvta.agencia (VARCHAR)
+  Desc 1: Tarifa de la Agencia
+  Desc 2: SEGMENTO DE MERCADO
+..............................
+[70%] hothsp.h_apa_tpo_hab (VARCHAR) <-> hotvta.tpo_hab (VARCHAR)
+  Desc 1: N/A
+  Desc 2: TIPO DE HABITACION
+..............................
+[70%] hottra.t_cve_res (VARCHAR) <-> hotvta.cto_noc_res (BIGINT)
+  Desc 1: CLAVE DE RESERVACION DE RENHAB
+  Desc 2: HABITACIONES VENDIDAS CON RESERVA
+..............................
+[70%] hotcth.tpo_comp (VARCHAR) <-> hothab.c_tpo_cma (VARCHAR)
+  Desc 1: (S/N) es compuesta
+  Desc 2: TIPO DE CAMA(S)
+..............................
+[70%] hotcth.tpo_comp (VARCHAR) <-> hothsp.h_tpo_cam (DOUBLE)
+  Desc 1: (S/N) es compuesta
+  Desc 2: Tipo de cambio con la que se facturo.
+..............................
+[70%] hotest.cto_cancel (BIGINT) <-> hotvta.cto_age (BIGINT)
+  Desc 1: CUARTOS CANCELADOS DEL DIA
+  Desc 2: CUARTOS POR AGENCIA
+..............................
+[70%] hotest.cto_salida (BIGINT) <-> hotvta.cto_lld (BIGINT)
+  Desc 1: CUARTOS QUE SALIERON HOY
+  Desc 2: CTOS ENTRANDO EN EL DIA
+..............................
+[70%] hotest.cto_salida (BIGINT) <-> hotvta.cto_ind (BIGINT)
+  Desc 1: CUARTOS QUE SALIERON HOY
+  Desc 2: cuartos individuales vgrg 20171024
+..............................
+[70%] hothsp.h_cod_gpo (VARCHAR) <-> hottra.t_codigo (VARCHAR)
+  Desc 1: CODIGO DE GRUPO
+  Desc 2: CODIGO DE TRANSACCION
+..............................
+[70%] hothsp.h_num_conf (VARCHAR) <-> hotvta.num_inf (BIGINT)
+  Desc 1: NUMERO DE CONFIRMACION DE RESERVACION
+  Desc 2: NUMERO DE INFANTES
+..............................
+[70%] hotreq.fecha_alta (VARCHAR) <-> hotvta.fec_vta (VARCHAR)
+  Desc 1: N/A
+  Desc 2: FECHA DE VENTA  AA-MM-DD
+..............................
+[71%] hotest.est_fec (VARCHAR) <-> hottra.t_fecha (VARCHAR)
+  Desc 1: N/A
+  Desc 2: FECHA DE LA TRANSACCION
+..............................
+[71%] hotest.cto_tot (BIGINT) <-> hotvta.cto_noc (BIGINT)
+  Desc 1: TOTAL DE CUARTOS EN EL HOTEL
+  Desc 2: HABITACIONES VENDIDAS POR DIA
+..............................
+[71%] hotest.cto_tot (BIGINT) <-> hotvta.cto_est (BIGINT)
+  Desc 1: TOTAL DE CUARTOS EN EL HOTEL
+  Desc 2: CUARTOS ESTIMADOS
+..............................
+[71%] hotest.cto_tot (BIGINT) <-> hotvta.cto_gpo (BIGINT)
+  Desc 1: TOTAL DE CUARTOS EN EL HOTEL
+  Desc 2: cuartos de grupos    vgrg 20171024
+..............................
+[71%] hotest.cto_ind (BIGINT) <-> hotvta.cto_noc (BIGINT)
+  Desc 1: CUARTOS INDIVIDUALES
+  Desc 2: HABITACIONES VENDIDAS POR DIA
+..............................
+[71%] hotest.cto_ind (BIGINT) <-> hotvta.cto_lld (BIGINT)
+  Desc 1: CUARTOS INDIVIDUALES
+  Desc 2: CTOS ENTRANDO EN EL DIA
+..............................
+[71%] hotest.cto_ind (BIGINT) <-> hotvta.cto_sda (BIGINT)
+  Desc 1: CUARTOS INDIVIDUALES
+  Desc 2: CUARTOS SALIDA
+..............................
+[71%] hotest.cto_dob (BIGINT) <-> hotvta.cto_noc (BIGINT)
+  Desc 1: CUARTOS DOBLES
+  Desc 2: HABITACIONES VENDIDAS POR DIA
+..............................
+[71%] hotest.cto_dob (BIGINT) <-> hotvta.cto_lld (BIGINT)
+  Desc 1: CUARTOS DOBLES
+  Desc 2: CTOS ENTRANDO EN EL DIA
+..............................
+[71%] hotest.cto_dob (BIGINT) <-> hotvta.cto_sda (BIGINT)
+  Desc 1: CUARTOS DOBLES
+  Desc 2: CUARTOS SALIDA
+..............................
+[71%] hotest.cto_dob (BIGINT) <-> hotvta.cto_ind (BIGINT)
+  Desc 1: CUARTOS DOBLES
+  Desc 2: cuartos individuales vgrg 20171024
+..............................
+[71%] hotest.cto_dob (BIGINT) <-> hotvta.cto_gpo (BIGINT)
+  Desc 1: CUARTOS DOBLES
+  Desc 2: cuartos de grupos    vgrg 20171024
+..............................
+[71%] hotest.cto_tri (BIGINT) <-> hotvta.cto_ing (DOUBLE)
+  Desc 1: CUARTOS TRIPLES
+  Desc 2: INGRESOS POR HABITACION
+..............................
+[71%] hotest.cto_tri (BIGINT) <-> hotvta.cto_est (BIGINT)
+  Desc 1: CUARTOS TRIPLES
+  Desc 2: CUARTOS ESTIMADOS
+..............................
+[71%] hotest.cto_tri (BIGINT) <-> hotvta.cto_ind (BIGINT)
+  Desc 1: CUARTOS TRIPLES
+  Desc 2: cuartos individuales vgrg 20171024
+..............................
+[71%] hotest.cto_cua (BIGINT) <-> hotvta.cto_noc (BIGINT)
+  Desc 1: CUARTOS CUADRUPLES
+  Desc 2: HABITACIONES VENDIDAS POR DIA
+..............................
+[71%] hotest.cto_cua (BIGINT) <-> hotvta.cto_sda (BIGINT)
+  Desc 1: CUARTOS CUADRUPLES
+  Desc 2: CUARTOS SALIDA
+..............................
+[71%] hotest.cto_cua (BIGINT) <-> hotvta.cto_age (BIGINT)
+  Desc 1: CUARTOS CUADRUPLES
+  Desc 2: CUARTOS POR AGENCIA
+..............................
+[71%] hotfbl.num_hab (VARCHAR) <-> hotreq.num_art (BIGINT)
+  Desc 1: NUMERO DE HABITACION
+  Desc 2: Numero de articulos requeridos
+..............................
+[71%] hotfbl.num_hab (VARCHAR) <-> hotvta.num_adu (BIGINT)
+  Desc 1: NUMERO DE HABITACION
+  Desc 2: NUMERO DE ADULTOS
+..............................
+[71%] hothsp.h_tfa_impuestos (DOUBLE) <-> hotvta.ing_impuestos (DOUBLE)
+  Desc 1: Tarifa con Impuestos
+  Desc 2: KAMR 20180430
+..............................
+[71%] hotreq.num_art (BIGINT) <-> hotvta.num_per (BIGINT)
+  Desc 1: Numero de articulos requeridos
+  Desc 2: NUMERO DE PERSONAS
+..............................
+[71%] hotreq.num_art (BIGINT) <-> hotvta.num_adu (BIGINT)
+  Desc 1: Numero de articulos requeridos
+  Desc 2: NUMERO DE ADULTOS
+..............................
+[72%] hotest.cto_no_show (BIGINT) <-> hotvta.cto_noc_res (BIGINT)
+  Desc 1: CUARTOS NO SHOW COBRABLES
+  Desc 2: HABITACIONES VENDIDAS CON RESERVA
+..............................
+[72%] hotest.cto_no_lleg (BIGINT) <-> hotvta.cto_noc_res (BIGINT)
+  Desc 1: CUARTOS NO SHOW NO COBRABLES
+  Desc 2: HABITACIONES VENDIDAS CON RESERVA
+..............................
+[72%] hothab.c_num_hab (VARCHAR) <-> hothsp.h_apa_num_hab (VARCHAR)
+  Desc 1: NUMERO DE HABITACION
+  Desc 2: N/A
+..............................
+[72%] hothab.c_tpo_hab (VARCHAR) <-> hothsp.h_tpo_hab_tfa (VARCHAR)
+  Desc 1: TIPO DE HABITACION
+  Desc 2: si no esta en blanco aplica para renta
+..............................
+[72%] hothab.c_tpo_hab (VARCHAR) <-> hothsp.h_tpo_hab_fac (VARCHAR)
+  Desc 1: TIPO DE HABITACION
+  Desc 2: N/A
+..............................
+[72%] hothab.c_tpo_hab (VARCHAR) <-> hothsp.h_apa_tpo_hab (VARCHAR)
+  Desc 1: TIPO DE HABITACION
+  Desc 2: N/A
+..............................
+[72%] hothab.c_tpo_cma (VARCHAR) <-> hothsp.h_tpo_cam_rta (DOUBLE)
+  Desc 1: TIPO DE CAMA(S)
+  Desc 2: tipo de cambio de rentas
+..............................
+[72%] hothab.c_num_noc_col (BIGINT) <-> hothsp.h_num_noc (BIGINT)
+  Desc 1: NOCHES OCUPADAS DESDE CAMBIO DE COLCHON
+  Desc 2: NUMERO DE NOCHES
+..............................
+[72%] hothab.c_cod_corto (VARCHAR) <-> hotstp.o_des_corto (VARCHAR)
+  Desc 1: 
+  Desc 2: Descripcion corta
+..............................
+[72%] hothsp.h_ult_cam_hra (VARCHAR) <-> hottra.t_can_hra (VARCHAR)
+  Desc 1: HORA  DE ULTIMO CAMBIO AL REGISTRO
+  Desc 2: HORA EN QUE SE EFECTUO LA CANCELACION
+..............................
+[72%] hothsp.h_tpo_cam (DOUBLE) <-> hottra.t_tipo_cambio (DOUBLE)
+  Desc 1: Tipo de cambio con la que se facturo.
+  Desc 2: N/A
+..............................
+[72%] hothsp.h_tipo_bra (VARCHAR) <-> hottra.t_tipo_trans (VARCHAR)
+  Desc 1: Cat logo de tipo de brazalete
+  Desc 2: N/A
+..............................
+[73%] hotcth.fac_ama (BIGINT) <-> hothab.c_factor_ama (BIGINT)
+  Desc 1: Factor Ama de Llaves
+  Desc 2: VALOR EN UNIDADES PARA CAMARISTA
+..............................
+[73%] hotest.cto_no_lleg (BIGINT) <-> hotvta.cto_llng (BIGINT)
+  Desc 1: CUARTOS NO SHOW NO COBRABLES
+  Desc 2: cuartos llegadas no garantizadas    vgrg 20171024
+..............................
+[73%] hotfbl.fecha_blo (VARCHAR) <-> hotreq.fecha_alta (VARCHAR)
+  Desc 1: FECHA BLOQUEADA
+  Desc 2: N/A
+..............................
+[73%] hottra.t_noches (BIGINT) <-> hotvta.cto_noc_res (BIGINT)
+  Desc 1: NOCHES DE ESTANCIA EN PAQUETES
+  Desc 2: HABITACIONES VENDIDAS CON RESERVA
+..............................
+[75%] hotcth.ibuff (VARCHAR) <-> hotfbl.buf (VARCHAR)
+  Desc 1: INICIO DE REGISTRO
+  Desc 2: AREA NO USADA
+..............................
+[75%] hotcth.tpo_hab (VARCHAR) <-> hothsp.h_tot_hab (BIGINT)
+  Desc 1: Tipo de Habitacion
+  Desc 2: NUMERO DE HABITACIONES
+..............................
+[75%] hotest.ibuff (VARCHAR) <-> hotfbl.buf (VARCHAR)
+  Desc 1: N/A
+  Desc 2: AREA NO USADA
+..............................
+[75%] hotest.cto_cua (BIGINT) <-> hothab.c_tpo_cma (VARCHAR)
+  Desc 1: CUARTOS CUADRUPLES
+  Desc 2: TIPO DE CAMA(S)
+..............................
+[75%] hotest.tpo_hab (VARCHAR) <-> hothsp.h_tot_hab (BIGINT)
+  Desc 1: N/A
+  Desc 2: NUMERO DE HABITACIONES
+..............................
+[75%] hotest.est_fec (VARCHAR) <-> hothsp.h_res_fec (VARCHAR)
+  Desc 1: N/A
+  Desc 2: FECHA DE RESERVACION
+..............................
+[75%] hotfbl.buf (VARCHAR) <-> hothab.ibuff (VARCHAR)
+  Desc 1: AREA NO USADA
+  Desc 2: INICIO DE REGISTRO
+..............................
+[75%] hotfbl.tpo_hab (VARCHAR) <-> hothsp.h_tot_hab (BIGINT)
+  Desc 1: TIPO DE HABITACION
+  Desc 2: NUMERO DE HABITACIONES
+..............................
+[75%] hotfbl.buf (VARCHAR) <-> hothsp.ibuff (VARCHAR)
+  Desc 1: AREA NO USADA
+  Desc 2: inicio de registro
+..............................
+[75%] hotfbl.buf (VARCHAR) <-> hotstp.ibuff (VARCHAR)
+  Desc 1: AREA NO USADA
+  Desc 2: N/A
+..............................
+[75%] hotfbl.buf (VARCHAR) <-> hottra.ibuff (VARCHAR)
+  Desc 1: AREA NO USADA
+  Desc 2: INICIO DE REGISTRO
+..............................
+[75%] hothab.c_cve_res (VARCHAR) <-> hotreq.cve_req (VARCHAR)
+  Desc 1: CLAVE DE RESERVACION
+  Desc 2: Clave del requerimiento
+..............................
+[75%] hothsp.h_cod_gpo (VARCHAR) <-> hotvta.cto_gpo (BIGINT)
+  Desc 1: CODIGO DE GRUPO
+  Desc 2: cuartos de grupos    vgrg 20171024
+..............................
+[75%] hothsp.h_cod_age (VARCHAR) <-> hotvta.cto_age (BIGINT)
+  Desc 1: CODIGO DE CLIENTES
+  Desc 2: CUARTOS POR AGENCIA
+..............................
+[75%] hothsp.h_edo (VARCHAR) <-> hotvta.edo (VARCHAR)
+  Desc 1: CODIGO DE ESTADO
+  Desc 2: ESTADO
+..............................
+[75%] hothsp.h_num_men (BIGINT) <-> hotvta.num_meg (BIGINT)
+  Desc 1: NUMERO DE MENORES
+  Desc 2: NUMERO DE MENORES GRATIS
+..............................
+[75%] hothsp.h_tot_hab (BIGINT) <-> hotvta.tpo_hab (VARCHAR)
+  Desc 1: NUMERO DE HABITACIONES
+  Desc 2: TIPO DE HABITACION
+..............................
+[75%] hotreq.cve_req (VARCHAR) <-> hottra.t_cve_res (VARCHAR)
+  Desc 1: Clave del requerimiento
+  Desc 2: CLAVE DE RESERVACION DE RENHAB
+..............................
+[75%] hottra.t_num_men (VARCHAR) <-> hotvta.num_meg (BIGINT)
+  Desc 1: NUMERO DE MENORES
+  Desc 2: NUMERO DE MENORES GRATIS
+..............................
+[75%] hottra.t_impuesto2 (DOUBLE) <-> hotvta.ing_impuestos (DOUBLE)
+  Desc 1: SEGUNDO IMPUESTO
+  Desc 2: KAMR 20180430
+..............................
+[76%] hotest.cto_cua (BIGINT) <-> hothab.c_cuna (VARCHAR)
+  Desc 1: CUARTOS CUADRUPLES
+  Desc 2: INDICA SI TIENE CUNA
+..............................
+[76%] hotest.cto_fs (BIGINT) <-> hotvta.cto_sda (BIGINT)
+  Desc 1: FUERA DE SERVICIO /OCUP. OTRO  HOTEL
+  Desc 2: CUARTOS SALIDA
+..............................
+[76%] hotest.cto_fs (BIGINT) <-> hotvta.cto_est (BIGINT)
+  Desc 1: FUERA DE SERVICIO /OCUP. OTRO  HOTEL
+  Desc 2: CUARTOS ESTIMADOS
+..............................
+[76%] hotfbl.fecha_ini_blo (VARCHAR) <-> hothab.c_fec_fin_blo (VARCHAR)
+  Desc 1: FECHA INICIO DE BLOQUEO
+  Desc 2: FECHA EN QUE TERMINA EL BLOQUEO
+..............................
+[76%] hothab.c_fec_cam_bla (VARCHAR) <-> hothsp.h_fec_cam_hab (VARCHAR)
+  Desc 1: FECHA DE CAMBIO DE BLANCOS
+  Desc 2: cuando se hizo el cambio
+..............................
+[76%] hothsp.h_tfa_impuestos (DOUBLE) <-> hottra.t_impuesto2 (DOUBLE)
+  Desc 1: Tarifa con Impuestos
+  Desc 2: SEGUNDO IMPUESTO
+..............................
+[77%] hotest.cto_no_lleg (BIGINT) <-> hotvta.cto_llg (BIGINT)
+  Desc 1: CUARTOS NO SHOW NO COBRABLES
+  Desc 2: cuartos llegadas garantizadas vgrg 20171024
+..............................
+[77%] hotest.cto_ind (BIGINT) <-> hotvta.cto_ing_dls (DOUBLE)
+  Desc 1: CUARTOS INDIVIDUALES
+  Desc 2: cto_ing pero en DLS   EGS 20150528
+..............................
+[77%] hothab.c_tpo_hab (VARCHAR) <-> hothsp.h_tot_hab (BIGINT)
+  Desc 1: TIPO DE HABITACION
+  Desc 2: NUMERO DE HABITACIONES
+..............................
+[77%] hothab.c_tpo_cma (VARCHAR) <-> hothsp.h_tpo_cam (DOUBLE)
+  Desc 1: TIPO DE CAMA(S)
+  Desc 2: Tipo de cambio con la que se facturo.
+..............................
+[77%] hothsp.h_can_res (VARCHAR) <-> hottra.t_can_mes (VARCHAR)
+  Desc 1: CANAL DE RESERVACION
+  Desc 2: MES DE CANCELACION
+..............................
+[77%] hothsp.h_tfa_renta (DOUBLE) <-> hottra.t_renta (VARCHAR)
+  Desc 1: Tarifa para Renta
+  Desc 2: N/A
+..............................
+[77%] hothsp.h_num_men_g (BIGINT) <-> hotvta.num_men (BIGINT)
+  Desc 1: N/A
+  Desc 2: NUMERO DE MENORES PAGANDO
+..............................
+[77%] hothsp.h_num_men_g (BIGINT) <-> hotvta.num_meg (BIGINT)
+  Desc 1: N/A
+  Desc 2: NUMERO DE MENORES GRATIS
+..............................
+[78%] hottra.t_impuesto (DOUBLE) <-> hotvta.ing_impuestos (DOUBLE)
+  Desc 1: IMPUESTO
+  Desc 2: KAMR 20180430
+..............................
+[80%] hotcth.cupo (VARCHAR) <-> hothsp.h_cupo (VARCHAR)
+  Desc 1: Cupo Teorico de Habitacion 1=Ind 2=Dob etc
+  Desc 2: Numero de cupo 0 al 9
+..............................
+[80%] hothsp.h_num_men_g (BIGINT) <-> hottra.t_num_men (VARCHAR)
+  Desc 1: N/A
+  Desc 2: NUMERO DE MENORES
+..............................
+[80%] hothsp.h_tfa_impuestos (DOUBLE) <-> hottra.t_impuesto (DOUBLE)
+  Desc 1: Tarifa con Impuestos
+  Desc 2: IMPUESTO
+..............................
+[82%] hotest.cto_salida (BIGINT) <-> hotvta.cto_sda (BIGINT)
+  Desc 1: CUARTOS QUE SALIERON HOY
+  Desc 2: CUARTOS SALIDA
+..............................
+[82%] hotfbl.num_hab (VARCHAR) <-> hothsp.h_num_hab3 (VARCHAR)
+  Desc 1: NUMERO DE HABITACION
+  Desc 2: 3ERA HAB BLOQUEADA
+..............................
+[82%] hothsp.h_codigop (VARCHAR) <-> hottra.t_codigo (VARCHAR)
+  Desc 1: N/A
+  Desc 2: CODIGO DE TRANSACCION
+..............................
+[84%] hothab.c_num_hab (VARCHAR) <-> hothsp.h_num_hab3 (VARCHAR)
+  Desc 1: NUMERO DE HABITACION
+  Desc 2: 3ERA HAB BLOQUEADA
+..............................
+[84%] hotfbl.fecha_ini_blo (VARCHAR) <-> hothab.c_fec_ini_blo (VARCHAR)
+  Desc 1: FECHA INICIO DE BLOQUEO
+  Desc 2: FECHA DE INICIO DEL BLOQUEO
+..............................
+[85%] hotest.cto_ind (BIGINT) <-> hotvta.cto_ing (DOUBLE)
+  Desc 1: CUARTOS INDIVIDUALES
+  Desc 2: INGRESOS POR HABITACION
+..............................
+[87%] hotcth.tpo_hab (VARCHAR) <-> hothab.c_tpo_hab (VARCHAR)
+  Desc 1: Tipo de Habitacion
+  Desc 2: TIPO DE HABITACION
+..............................
+[87%] hotcth.tpo_hab (VARCHAR) <-> hothsp.h_tpo_hab (VARCHAR)
+  Desc 1: Tipo de Habitacion
+  Desc 2: TIPO DE LAS HABITACIONES
+..............................
+[87%] hotest.tpo_hab (VARCHAR) <-> hothab.c_tpo_hab (VARCHAR)
+  Desc 1: N/A
+  Desc 2: TIPO DE HABITACION
+..............................
+[87%] hotest.tpo_hab (VARCHAR) <-> hothsp.h_tpo_hab (VARCHAR)
+  Desc 1: N/A
+  Desc 2: TIPO DE LAS HABITACIONES
+..............................
+[87%] hotest.tipo_reg (VARCHAR) <-> hotreq.tipo_req (VARCHAR)
+  Desc 1: 0.- por tipo de habitacion del hotel
+  Desc 2: por (F)echa (L)legada (S)alida
+..............................
+[87%] hotfbl.num_hab (VARCHAR) <-> hothab.c_num_hab (VARCHAR)
+  Desc 1: NUMERO DE HABITACION
+  Desc 2: NUMERO DE HABITACION
+..............................
+[87%] hotfbl.tpo_hab (VARCHAR) <-> hothab.c_tpo_hab (VARCHAR)
+  Desc 1: TIPO DE HABITACION
+  Desc 2: TIPO DE HABITACION
+..............................
+[87%] hotfbl.num_hab (VARCHAR) <-> hothsp.h_num_hab (VARCHAR)
+  Desc 1: NUMERO DE HABITACION
+  Desc 2: NUMERO DE HABITACION
+..............................
+[87%] hotfbl.tpo_hab (VARCHAR) <-> hothsp.h_tpo_hab (VARCHAR)
+  Desc 1: TIPO DE HABITACION
+  Desc 2: TIPO DE LAS HABITACIONES
+..............................
+[87%] hothab.c_tpo_hab (VARCHAR) <-> hotvta.tpo_hab (VARCHAR)
+  Desc 1: TIPO DE HABITACION
+  Desc 2: TIPO DE HABITACION
+..............................
+[87%] hothab.c_num_per (VARCHAR) <-> hotvta.num_per (BIGINT)
+  Desc 1: NUM DE PERSONAS REPORTADAS POR AMA
+  Desc 2: NUMERO DE PERSONAS
+..............................
+[87%] hothsp.h_res_cve (VARCHAR) <-> hotreq.res_cve (VARCHAR)
+  Desc 1: N/A
+  Desc 2: Clave de la reservaciÃ³n
+..............................
+[87%] hothsp.h_num_per (BIGINT) <-> hotvta.num_per (BIGINT)
+  Desc 1: NUMERO DE PERSONAS
+  Desc 2: NUMERO DE PERSONAS
+..............................
+[87%] hothsp.h_num_adu (BIGINT) <-> hotvta.num_adu (BIGINT)
+  Desc 1: NUMERO DE ADULTOS
+  Desc 2: NUMERO DE ADULTOS
+..............................
+[87%] hothsp.h_num_men (BIGINT) <-> hotvta.num_men (BIGINT)
+  Desc 1: NUMERO DE MENORES
+  Desc 2: NUMERO DE MENORES PAGANDO
+..............................
+[87%] hothsp.h_tpo_hab (VARCHAR) <-> hotvta.tpo_hab (VARCHAR)
+  Desc 1: TIPO DE LAS HABITACIONES
+  Desc 2: TIPO DE HABITACION
+..............................
+[87%] hothsp.h_seg_mer (VARCHAR) <-> hotvta.seg_mer (VARCHAR)
+  Desc 1: SEGMENTO DE MERCADO
+  Desc 2: SEGMENTO DE MERCADO
+..............................
+[87%] hothsp.h_paquete (VARCHAR) <-> hotvta.paquete (VARCHAR)
+  Desc 1: TIPO DE PAQUETE
+  Desc 2: PAQUETE
+..............................
+[87%] hothsp.h_num_jun (BIGINT) <-> hotvta.num_jun (BIGINT)
+  Desc 1: Numero de menores junior
+  Desc 2: NUMERO DE JUNIORS
+..............................
+[87%] hottra.t_num_adu (VARCHAR) <-> hotvta.num_adu (BIGINT)
+  Desc 1: NUMERO DE ADULTOS
+  Desc 2: NUMERO DE ADULTOS
+..............................
+[87%] hottra.t_num_men (VARCHAR) <-> hotvta.num_men (BIGINT)
+  Desc 1: NUMERO DE MENORES
+  Desc 2: NUMERO DE MENORES PAGANDO
+..............................
+[87%] hottra.t_num_per (VARCHAR) <-> hotvta.num_per (BIGINT)
+  Desc 1: N/A
+  Desc 2: NUMERO DE PERSONAS
+..............................
+[88%] hothab.c_num_hab (VARCHAR) <-> hothsp.h_num_hab (VARCHAR)
+  Desc 1: NUMERO DE HABITACION
+  Desc 2: NUMERO DE HABITACION
+..............................
+[88%] hothab.c_tpo_hab (VARCHAR) <-> hothsp.h_tpo_hab (VARCHAR)
+  Desc 1: TIPO DE HABITACION
+  Desc 2: TIPO DE LAS HABITACIONES
+..............................
+[88%] hothab.c_num_per (VARCHAR) <-> hothsp.h_num_per (BIGINT)
+  Desc 1: NUM DE PERSONAS REPORTADAS POR AMA
+  Desc 2: NUMERO DE PERSONAS
+..............................
+[88%] hothab.c_num_noc (BIGINT) <-> hothsp.h_num_noc (BIGINT)
+  Desc 1: NOCHES OCUPADAS
+  Desc 2: NUMERO DE NOCHES
+..............................
+[88%] hothab.c_num_per (VARCHAR) <-> hottra.t_num_per (VARCHAR)
+  Desc 1: NUM DE PERSONAS REPORTADAS POR AMA
+  Desc 2: N/A
+..............................
+[88%] hothab.c_cve_res (VARCHAR) <-> hottra.t_cve_res (VARCHAR)
+  Desc 1: CLAVE DE RESERVACION
+  Desc 2: CLAVE DE RESERVACION DE RENHAB
+..............................
+[88%] hothsp.h_num_per (BIGINT) <-> hottra.t_num_per (VARCHAR)
+  Desc 1: NUMERO DE PERSONAS
+  Desc 2: N/A
+..............................
+[88%] hothsp.h_num_adu (BIGINT) <-> hottra.t_num_adu (VARCHAR)
+  Desc 1: NUMERO DE ADULTOS
+  Desc 2: NUMERO DE ADULTOS
+..............................
+[88%] hothsp.h_num_men (BIGINT) <-> hottra.t_num_men (VARCHAR)
+  Desc 1: NUMERO DE MENORES
+  Desc 2: NUMERO DE MENORES
+..............................
+[88%] hothsp.h_programa (VARCHAR) <-> hotvta.programa (VARCHAR)
+  Desc 1: PROG COMERCIAL AL QUE PERTENECE
+  Desc 2: PROGRAMA
+..............................
+[90%] hothab.c_cod_corto (VARCHAR) <-> hotstp.o_cod_corto (VARCHAR)
+  Desc 1: 
+  Desc 2: Letra que representa codigo corto
+..............................
