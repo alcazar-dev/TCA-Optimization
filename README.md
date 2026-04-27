@@ -108,6 +108,4 @@ Lógica de negocio derivada para el algoritmo de optimización.
 | :--- | :--- | :--- | :--- |
 | **`factor_limpieza_efectivo`** | `hab + cth` | **DERIVADA** | **Variable crítica:** Prioridad y peso de limpieza calculada mediante `COALESCE` entre el factor específico de la habitación y el base por tipo. |
 
----
 
-Espero que este formato te sea de gran utilidad para documentar tu proyecto. ¿Te gustaría que añadiera una breve explicación técnica sobre cómo la columna `factor_limpieza_efectivo` influye en el cálculo del VRPTW?
