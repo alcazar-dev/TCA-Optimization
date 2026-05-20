@@ -1,63 +1,49 @@
 """
-TCA Optimization  –  Motor de Ruteo v3  (Módulos 2 + 3)
+TCA Optimization  –  Motor de Ruteo v5  (Módulos 2 + 3)
 =========================================================
-Reemplaza el algoritmo Greedy + 2-opt de v2 por:
+Mejoras sobre v4:
 
-  ETAPA 1 – Plan Maestro (inicio del día)
-  ────────────────────────────────────────
-  [E1-A]  Asignación inicial con Clarke-Wright Savings (CWS).
-          Parte de rutas triviales (depot → hab → depot) y las
-          fusiona iterativamente según el ahorro de traslado.
-          Respeta capacidades de turno, breaks y VIP.
+  [v5-1]  Bug DND corregido: inserción de habitaciones sin asignar.
+          Tras remover una habitación por DND (o cualquier causa),
+          se llama a _insertar_sin_asignar() antes de VNS para que
+          las habitaciones liberadas vuelvan a incorporarse en la
+          ruta más barata factible. VNS luego las reubica si mejoran
+          el plan global.
 
-  [E1-B]  Optimización por ruta con DP exacta (bitmask).
-          Para cada empleado, dado su conjunto de habitaciones
-          asignadas (n ≤ ~20), encuentra la permutación de mínimo
-          costo con Held-Karp adaptado a ventanas de tiempo.
-          O(2^n · n²) por empleado — viable para n ≤ 20.
-          Fallback a 2-opt si n > DP_MAX_N.
+  [v5-2]  Ventanas de tiempo verificadas en ClarkeWright.asignar().
+          Paso 1 (asignación trivial) y Paso 3 (fusión de savings)
+          ahora rechazan asignaciones que violen VENTANA_SOLICITADA,
+          igualando el comportamiento del fallback greedy.
 
-  [E1-C]  VNS post-plan (refinamiento global inter-rutas).
+  [v5-3]  Sincronización de estado con ctx.sincronizar_rooms(rooms).
+          Nuevo método en PlanContext que recalcula room.asignada_a
+          y room.estado a partir de ctx.rutas() tras cualquier
+          optimización. Se llama automáticamente al final de
+          planificar() y reparar(), y puede invocarse manualmente.
+          Corrige la desincronización que dejaba _two_opt_star sin
+          actualizar los metadatos de las habitaciones.
 
-  [E1-D]  Fallback Greedy (igual que v2) si CWS+DP supera
-          MAX_PLAN_SEC segundos o si metodo='greedy'.
+  [v5-4]  SchedulerConfig dataclass inyectable.
+          Todas las constantes que antes estaban dispersas como
+          atributos de clase (MAX_PLAN_SEC, DP_MAX_N, MAX_VNS_SEC,
+          VIP_MULTIPLIER, pesos del Prioritizer, bonificaciones de
+          evolución) están centralizadas en SchedulerConfig.
+          Scheduler, RouteDP, VNS y Prioritizer aceptan un config
+          opcional; si no se pasa, usan SchedulerConfig() con los
+          mismos valores por defecto que v4.
 
-  ETAPA 2 – Reparación Dinámica (durante el día)
-  ───────────────────────────────────────────────
-  [E2]    Variable Neighborhood Search (VNS) con warm-start
-          desde el plan de Etapa 1.  Tres vecindarios:
-            · N1 Or-opt    – reposiciona 1 hab dentro de su ruta
-            · N2 Relocate  – mueve 1 hab entre dos rutas
-            · N3 2-opt*    – intercambia sufijos entre dos rutas
-          Convergencia objetivo: 1–3 seg por evento.
-          Eventos soportados: DND, CAMBIO_URGENTE, VENTANA.
-
-  Compatibilidad total con HotelGraph, Room, StaffMember,
-  Loader y Prioritizer de v2 (sin cambios en esas clases).
-
-Cambios respecto a v2
-─────────────────────
-  [v3-1]  ClarkeWright: asignación inicial más inteligente que
-          Greedy puro; genera distribución de carga más uniforme.
-  [v3-2]  RouteDP: Held-Karp exacto por ruta, O(2^n·n²).
-          Reduce tiempo de ruta un 8-15 % respecto a 2-opt.
-  [v3-3]  VNS con 3 vecindarios (Or-opt, Relocate, 2-opt*).
-          Sustituye el 2-opt de v2 tanto en Etapa 1 como en
-          Etapa 2 (reparación dinámica).
-  [v3-4]  StaffMember.reset_reloj() para poder re-planificar
-          sin reinstanciar el objeto.
-  [v3-5]  route_cost() con pos_inicio explícito (corrección
-          del _route_cost() de v2 que ignoraba el traslado
-          desde la posición inicial al primer destino).
-  [v3-6]  simular_ruta() para verificar factibilidad sin mutar
-          el estado del StaffMember.
+  Sin cambios en: HotelGraph, Room, Loader, _dp_worker,
+                  ClarkeWright._savings(), VNS._or_opt(),
+                  VNS._two_opt_star(), MetricsCollector.
 """
 
 from __future__ import annotations
 
 import math
 import time
-import itertools
+import json
+import os
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -66,7 +52,7 @@ import pandas as pd
 
 
 # ══════════════════════════════════════════════════════════════════
-# UTILIDADES DE TIEMPO  (sin cambios respecto a v2)
+# UTILIDADES DE TIEMPO
 # ══════════════════════════════════════════════════════════════════
 
 def hhmm_a_seg(hhmm: str) -> int:
@@ -83,39 +69,81 @@ def seg_a_hhmm(segundos: int) -> str:
 
 
 # ══════════════════════════════════════════════════════════════════
-# 1. GRAFO DEL HOTEL  (sin cambios respecto a v2)
+# [v5-4]  SchedulerConfig – constantes centralizadas
+# ══════════════════════════════════════════════════════════════════
+
+@dataclass
+class SchedulerConfig:
+    """
+    [v5-4] Todas las constantes del motor en un único lugar.
+
+    Inyectar en el constructor de Scheduler para sobreescribir
+    cualquier valor sin tocar el código:
+
+        cfg = SchedulerConfig(dp_max_n=12, max_vns_sec=6.0)
+        scheduler = Scheduler(graph, config=cfg)
+    """
+    # ── Scheduler ─────────────────────────────────────────────────
+    max_plan_sec: float = 60.0          # timeout fase CWS
+
+    # ── RouteDP ───────────────────────────────────────────────────
+    dp_max_n: int = 14                  # umbral Held-Karp vs 2-opt
+
+    # ── VNS ───────────────────────────────────────────────────────
+    max_vns_sec: float = 4.0            # timeout VNS por llamada
+
+    # ── HotelGraph ────────────────────────────────────────────────
+    vip_multiplier: float = 1.4
+    inter_floor_sec: int = 30
+    inter_edif_sec: int = 300
+    inter_hab_sec: int = 10
+    vip_types: frozenset = field(default_factory=lambda: frozenset({
+        'STD SUPERIOR', 'SUITE 1 REC', 'SUITE 2 REC',
+        'SUITE STUDIO', 'FAMILIAR 5', 'FAMILIAR 6', 'PENT-HOUSE'
+    }))
+
+    # ── Prioritizer ───────────────────────────────────────────────
+    w_vip: float = 100.0
+    w_piso: float = 15.0
+    w_limpieza: float = 5.0
+    max_piso: int = 5
+    bonus_evolucion: dict = field(default_factory=lambda: {
+        'CAMBIO':      9999.0,
+        'SALIDA':       200.0,
+        'ENTRADA':       50.0,
+        'PERMANENCIA':    0.0,
+        'DISPONIBLE':     0.0,
+    })
+
+
+# ══════════════════════════════════════════════════════════════════
+# 1. GRAFO DEL HOTEL
 # ══════════════════════════════════════════════════════════════════
 
 class HotelGraph:
     """
     Carga la matriz de traslados (272×272, segundos) y la de
-    tiempos de limpieza (minutos).  Expone consultas de costo.
+    tiempos de limpieza (minutos). Expone consultas de costo.
+    Acepta un SchedulerConfig para sus constantes.
     """
 
-    VIP_TYPES = {
-        'STD SUPERIOR', 'SUITE 1 REC', 'SUITE 2 REC',
-        'SUITE STUDIO', 'FAMILIAR 5', 'FAMILIAR 6', 'PENT-HOUSE'
-    }
-    VIP_MULTIPLIER  = 1.4
-    INTER_FLOOR_SEC = 30
-    INTER_EDIF_SEC  = 300
-    INTER_HAB_SEC   = 10
+    def __init__(
+        self,
+        path_traslados: str,
+        path_limpieza: str,
+        config: SchedulerConfig | None = None
+    ):
+        self._cfg = config or SchedulerConfig()
 
-    def __init__(self, path_traslados: str, path_limpieza: str):
         self._traslados = pd.read_csv(path_traslados, index_col=0)
         self._traslados.index   = self._traslados.index.astype(str)
         self._traslados.columns = self._traslados.columns.astype(str)
 
-        self._limpieza = pd.read_csv(path_limpieza)
+        raw_lim = pd.read_csv(path_limpieza)
         self._limpieza_dict: dict[str, int] = dict(
-            zip(self._limpieza['Configuración'],
-                self._limpieza['Tiempo Estimado (min)'])
+            zip(raw_lim['Configuración'],
+                raw_lim['Tiempo Estimado (min)'])
         )
-
-        self.rooms: dict[str, dict] = {}
-        for hab in self._traslados.index:
-            e, p, h = self._parse(hab)
-            self.rooms[hab] = {'edificio': e, 'piso': p, 'hab': h}
 
     @staticmethod
     def _parse(num_hab: str) -> tuple[int, int, int]:
@@ -129,38 +157,41 @@ class HotelGraph:
         try:
             return int(self._traslados.loc[str(origen), str(destino)])
         except KeyError:
+            cfg = self._cfg
             e1, p1, h1 = self._parse(origen)
             e2, p2, h2 = self._parse(destino)
-            return (abs(e1 - e2) * self.INTER_EDIF_SEC
-                    + abs(p1 - p2) * self.INTER_FLOOR_SEC
-                    + abs(h1 - h2) * self.INTER_HAB_SEC)
+            return (abs(e1 - e2) * cfg.inter_edif_sec
+                    + abs(p1 - p2) * cfg.inter_floor_sec
+                    + abs(h1 - h2) * cfg.inter_hab_sec)
 
     def limpieza(self, tpo_cama: str, cpo: int = 2, desc: str = '') -> int:
         base_min  = self._limpieza_dict.get(tpo_cama.strip(), 30)
         extra_min = max(0, cpo - 2) * 5
         total_min = base_min + extra_min
-        if desc.strip().upper() in self.VIP_TYPES:
-            total_min = math.ceil(total_min * self.VIP_MULTIPLIER)
+        if desc.strip().upper() in self._cfg.vip_types:
+            total_min = math.ceil(total_min * self._cfg.vip_multiplier)
         return total_min * 60
 
     def vip_multiplier(self, desc: str) -> float:
-        return self.VIP_MULTIPLIER if desc.strip().upper() in self.VIP_TYPES else 1.0
+        return (self._cfg.vip_multiplier
+                if desc.strip().upper() in self._cfg.vip_types else 1.0)
 
 
 # ══════════════════════════════════════════════════════════════════
-# 2. ENTIDADES  (sin cambios respecto a v2, + reset_reloj en Staff)
+# 2. ENTIDADES
 # ══════════════════════════════════════════════════════════════════
 
 @dataclass
 class Room:
+    """Habitación sucia pendiente de limpieza."""
     num_hab:  str
     tpo_cama: str
     desc:     str
     cpo:      int
 
-    vista:    str  = ''
-    nom_hsp:  str  = ''
-    num_per:  int  = 0
+    vista:    str = ''
+    nom_hsp:  str = ''
+    num_per:  int = 0
     evolucion: str = 'PERMANENCIA'
 
     estado_fisico: str = 'SUCIO'
@@ -190,11 +221,15 @@ class Room:
         return self.restriccion_huesped == 'VENTANA_SOLICITADA'
 
 
-@dataclass
+@dataclass(frozen=True)
 class StaffMember:
+    """
+    Definición inmutable del empleado.
+    El estado mutable vive en ExecutionState.
+    """
     employee_id:    str
     employee_name:  str
-    pos_actual:     str
+    pos_inicio:     str
     shift_type:     str = 'MORNING'
 
     turno_inicio_s: int = 7  * 3600
@@ -202,40 +237,70 @@ class StaffMember:
     break_inicio_s: int = 11 * 3600
     break_dur_s:    int = 30 * 60
 
-    def __post_init__(self):
-        self._pos_inicio:      str        = self.pos_actual   # guardar para reset
-        self.tiempo_actual_s:  int        = self.turno_inicio_s
-        self.tiempo_ocupado_s: int        = 0
-        self.ruta:             list[str]  = []
-        self.log:              list[dict] = []
-        self.tiempo_libre_s:   int = (
-            (self.turno_fin_s - self.turno_inicio_s) - self.break_dur_s
-        )
+    @property
+    def tiempo_libre_s(self) -> int:
+        return (self.turno_fin_s - self.turno_inicio_s) - self.break_dur_s
+
+    @property
+    def break_fin_s(self) -> int:
+        return self.break_inicio_s + self.break_dur_s
+
+
+# ──────────────────────────────────────────────────────────────────
+# ExecutionState
+# ──────────────────────────────────────────────────────────────────
+
+class ExecutionState:
+    """Estado mutable de un StaffMember durante una planificación."""
+
+    def __init__(self, staff: StaffMember):
+        self.staff             = staff
+        self.tiempo_actual_s   = staff.turno_inicio_s
+        self.tiempo_ocupado_s  = 0
+        self.pos_actual:  str        = staff.pos_inicio
+        self.ruta:        list[str]  = []
+        self.log:         list[dict] = []
+
+    # Alias de compatibilidad
+    @property
+    def employee_id(self) -> str:    return self.staff.employee_id
+    @property
+    def employee_name(self) -> str:  return self.staff.employee_name
+    @property
+    def shift_type(self) -> str:     return self.staff.shift_type
+    @property
+    def turno_inicio_s(self) -> int: return self.staff.turno_inicio_s
+    @property
+    def turno_fin_s(self) -> int:    return self.staff.turno_fin_s
+    @property
+    def break_inicio_s(self) -> int: return self.staff.break_inicio_s
+    @property
+    def break_dur_s(self) -> int:    return self.staff.break_dur_s
+    @property
+    def break_fin_s(self) -> int:    return self.staff.break_fin_s
+    @property
+    def _pos_inicio(self) -> str:    return self.staff.pos_inicio
 
     @property
     def disponible_s(self) -> int:
-        return self.tiempo_libre_s - self.tiempo_ocupado_s
+        return self.staff.tiempo_libre_s - self.tiempo_ocupado_s
 
     def puede_asignar(self, traslado_s: int, limpieza_s: int) -> bool:
-        """Verifica factibilidad: tiempo libre, break y fin de turno."""
         inicio_tarea = self.tiempo_actual_s + traslado_s
         fin_tarea    = inicio_tarea + limpieza_s
         if self.disponible_s < traslado_s + limpieza_s:
             return False
-        break_fin = self.break_inicio_s + self.break_dur_s
-        if inicio_tarea < break_fin and fin_tarea > self.break_inicio_s:
+        if inicio_tarea < self.break_fin_s and fin_tarea > self.staff.break_inicio_s:
             return False
-        if fin_tarea > self.turno_fin_s:
+        if fin_tarea > self.staff.turno_fin_s:
             return False
         return True
 
     def avanzar_reloj(self, traslado_s: int, limpieza_s: int, num_hab: str):
-        """Registra la asignación y avanza el reloj interno."""
         inicio_traslado = self.tiempo_actual_s
         inicio_tarea    = inicio_traslado + traslado_s
-        break_fin       = self.break_inicio_s + self.break_dur_s
-        if self.break_inicio_s <= inicio_tarea < break_fin:
-            inicio_tarea = break_fin
+        if self.staff.break_inicio_s <= inicio_tarea < self.break_fin_s:
+            inicio_tarea = self.break_fin_s
         fin_tarea = inicio_tarea + limpieza_s
         self.log.append({
             'num_hab':         num_hab,
@@ -249,23 +314,90 @@ class StaffMember:
         self.tiempo_ocupado_s += traslado_s + limpieza_s
 
     def sincronizar_pos_post_opt(self):
-        """[v3-4] Actualiza pos_actual al último elemento de la ruta optimizada."""
         if self.ruta:
             self.pos_actual = self.ruta[-1]
 
-    # Alias de compatibilidad con v2
-    sincronizar_pos_post_2opt = sincronizar_pos_post_opt
-
-    def reset_reloj(self):
-        """[v3-4] Reinicia el reloj al inicio del turno (útil para re-simular la ruta)."""
-        self.tiempo_actual_s  = self.turno_inicio_s
+    def reset(self):
+        self.tiempo_actual_s  = self.staff.turno_inicio_s
         self.tiempo_ocupado_s = 0
+        self.pos_actual       = self.staff.pos_inicio
+        self.ruta             = []
         self.log              = []
-        self.pos_actual       = self._pos_inicio
+
+
+# ──────────────────────────────────────────────────────────────────
+# PlanContext
+# ──────────────────────────────────────────────────────────────────
+
+class PlanContext:
+    """
+    Gestor de estados de ejecución para un día de planificación.
+
+    Métodos principales:
+      ctx.estado(employee_id)          → ExecutionState mutable
+      ctx.todos                        → lista de todos los estados
+      ctx.activos                      → estados con ruta no vacía
+      ctx.reset()                      → reinicia todos los estados
+      ctx.rutas()                      → snapshot {eid: [habs]}
+      ctx.sincronizar_rooms(rooms)     → [v5-3] recalcula room.asignada_a
+                                         y room.estado a partir de las rutas
+    """
+
+    def __init__(self, staff: list[StaffMember]):
+        self._estados: dict[str, ExecutionState] = {
+            s.employee_id: ExecutionState(s) for s in staff
+        }
+        self._staff = staff
+
+    def estado(self, employee_id: str) -> ExecutionState:
+        return self._estados[employee_id]
+
+    @property
+    def todos(self) -> list[ExecutionState]:
+        return list(self._estados.values())
+
+    @property
+    def activos(self) -> list[ExecutionState]:
+        return [e for e in self._estados.values() if e.ruta]
+
+    def reset(self):
+        for e in self._estados.values():
+            e.reset()
+
+    def rutas(self) -> dict[str, list[str]]:
+        return {eid: e.ruta[:] for eid, e in self._estados.items()}
+
+    # ── [v5-3] ────────────────────────────────────────────────────
+    def sincronizar_rooms(self, rooms: list[Room]) -> None:
+        """
+        [v5-3] Recalcula room.asignada_a y room.estado a partir de
+        las rutas actuales de todos los ExecutionState.
+
+        Debe llamarse tras cualquier operación que mute las rutas
+        (VNS, DP, reinserción post-DND) para mantener la coherencia
+        entre el estado de ctx y los metadatos de las habitaciones.
+
+        Complejidad: O(empleados × habs_por_ruta) — negligible.
+        """
+        # Índice inverso: num_hab → employee_id
+        asignacion: dict[str, str] = {}
+        for e in self._estados.values():
+            for hab in e.ruta:
+                asignacion[hab] = e.employee_id
+
+        for room in rooms:
+            eid = asignacion.get(room.num_hab)
+            if eid is not None:
+                room.asignada_a = eid
+                room.estado     = 'ASIGNADA'
+            elif room.estado not in ('DND',):
+                # No tocar habitaciones que ya tenían estado especial
+                room.asignada_a = None
+                room.estado     = 'SIN_ASIGNAR'
 
 
 # ══════════════════════════════════════════════════════════════════
-# 3. LOADERS  (sin cambios respecto a v2)
+# 3. LOADERS
 # ══════════════════════════════════════════════════════════════════
 
 class Loader:
@@ -281,7 +413,7 @@ class Loader:
             df = df[df['estado_fisico'] == 'SUCIO']
         df_dnd = df[df['restriccion_huesped'] == 'DND']
         if not df_dnd.empty:
-            print(f"  ⚠️  {len(df_dnd)} hab con DND excluidas: "
+            print(f"  {len(df_dnd)} hab con DND excluidas: "
                   f"{df_dnd['num_hab'].tolist()}")
         df = df[df['restriccion_huesped'] != 'DND']
 
@@ -309,7 +441,7 @@ class Loader:
                 ventana_inicio_s    = vent_ini,
                 ventana_fin_s       = vent_fin,
             ))
-        print(f"  ✅ {len(rooms)} habitaciones cargadas para {fecha}")
+        print(f"  {len(rooms)} habitaciones cargadas para {fecha}")
         return rooms
 
     @staticmethod
@@ -329,68 +461,68 @@ class Loader:
             staff.append(StaffMember(
                 employee_id    = str(row['employee_id']),
                 employee_name  = str(row['employee_name']),
-                pos_actual     = pos_inicio,
+                pos_inicio     = pos_inicio,
                 shift_type     = str(row.get('shift_type', 'MORNING')),
                 turno_inicio_s = turno_ini,
                 turno_fin_s    = turno_fin,
                 break_inicio_s = break_ini,
                 break_dur_s    = break_dur,
             ))
-        print(f"  ✅ {len(staff)} empleados activos para {day}")
+        print(f"  {len(staff)} empleados activos para {day}")
         return staff
 
 
 # ══════════════════════════════════════════════════════════════════
-# 4. PRIORIZACIÓN  (sin cambios respecto a v2)
+# 4. PRIORIZACIÓN
 # ══════════════════════════════════════════════════════════════════
 
 class Prioritizer:
-    W_VIP      = 100.0
-    W_PISO     = 15.0
-    W_LIMPIEZA = 5.0
-    MAX_PISO   = 5
-
-    BONUS_EVOLUCION = {
-        'CAMBIO':      9999.0,
-        'SALIDA':       200.0,
-        'ENTRADA':       50.0,
-        'PERMANENCIA':    0.0,
-        'DISPONIBLE':     0.0,
-    }
+    """
+    Calcula el score de prioridad de cada habitación.
+    Acepta un SchedulerConfig para sus pesos y bonificaciones.
+    """
 
     @classmethod
-    def score(cls, room: Room, graph: HotelGraph,
-              max_limpieza_s: int = 5700) -> float:
-        bonus_evol = cls.BONUS_EVOLUCION.get(room.evolucion, 0.0)
+    def score(
+        cls,
+        room: Room,
+        graph: HotelGraph,
+        config: SchedulerConfig,
+        max_limpieza_s: int = 5700
+    ) -> float:
+        bonus_evol = config.bonus_evolucion.get(room.evolucion, 0.0)
         if room.evolucion == 'CAMBIO':
             return bonus_evol
-        vip_bonus      = cls.W_VIP if graph.vip_multiplier(room.desc) > 1.0 else 0.0
-        piso_rel       = max(0, cls.MAX_PISO - room.piso)
-        piso_score     = cls.W_PISO * piso_rel
+        vip_bonus      = config.w_vip if graph.vip_multiplier(room.desc) > 1.0 else 0.0
+        piso_rel       = max(0, config.max_piso - room.piso)
+        piso_score     = config.w_piso * piso_rel
         limpieza_norm  = 1.0 - (room.tiempo_limpieza_s / max(max_limpieza_s, 1))
-        limpieza_score = cls.W_LIMPIEZA * limpieza_norm
+        limpieza_score = config.w_limpieza * limpieza_norm
         return bonus_evol + vip_bonus + piso_score + limpieza_score
 
     @classmethod
-    def rank(cls, rooms: list[Room], graph: HotelGraph) -> list[Room]:
+    def rank(
+        cls,
+        rooms: list[Room],
+        graph: HotelGraph,
+        config: SchedulerConfig
+    ) -> list[Room]:
         max_t = max((r.tiempo_limpieza_s for r in rooms), default=1)
         for r in rooms:
-            r.prioridad = cls.score(r, graph, max_t)
+            r.prioridad = cls.score(r, graph, config, max_t)
         return sorted(rooms, key=lambda r: -r.prioridad)
 
 
 # ══════════════════════════════════════════════════════════════════
-# 5. UTILIDADES DE RUTA  [v3-5] [v3-6]
+# 5. UTILIDADES DE RUTA
 # ══════════════════════════════════════════════════════════════════
 
-def route_cost(route: list[str], graph: HotelGraph,
-               limpieza_map: dict[str, int],
-               pos_inicio: str) -> int:
-    """
-    [v3-5] Costo total de una ruta en segundos.
-    Incluye el traslado desde pos_inicio hasta la primera habitación,
-    corrigiendo el bug de v2 (_route_cost omitía ese traslado inicial).
-    """
+def route_cost(
+    route:        list[str],
+    graph:        HotelGraph,
+    limpieza_map: dict[str, int],
+    pos_inicio:   str
+) -> int:
     if not route:
         return 0
     total = graph.traslado(pos_inicio, route[0]) + limpieza_map.get(route[0], 0)
@@ -401,119 +533,157 @@ def route_cost(route: list[str], graph: HotelGraph,
 
 
 def simular_ruta(
-    s: StaffMember,
-    ruta: list[str],
+    ctx:          ExecutionState,
+    ruta:         list[str],
     limpieza_map: dict[str, int],
-    graph: HotelGraph
+    graph:        HotelGraph
 ) -> bool:
     """
-    [v3-6] Simula la ejecución de `ruta` sobre el StaffMember SIN mutarlo.
+    Simula la ejecución de `ruta` SIN mutar el ExecutionState.
     Retorna True si la ruta es factible (respeta break y fin de turno).
-    Usa pos_inicio del StaffMember para el primer traslado.
     """
-    t       = s.turno_inicio_s
-    pos     = s._pos_inicio          # siempre desde el origen del turno
-    break_f = s.break_inicio_s + s.break_dur_s
+    t   = ctx.staff.turno_inicio_s
+    pos = ctx.staff.pos_inicio
+    bf  = ctx.staff.break_fin_s
+    bi  = ctx.staff.break_inicio_s
 
     for hab in ruta:
         tsl    = graph.traslado(pos, hab)
         lim    = limpieza_map.get(hab, 0)
         inicio = t + tsl
-        # Saltar break si el traslado aterriza dentro del bloque
-        if s.break_inicio_s <= inicio < break_f:
-            inicio = break_f
+        if bi <= inicio < bf:
+            inicio = bf
         fin = inicio + lim
-        if fin > s.turno_fin_s:
+        if fin > ctx.staff.turno_fin_s:
             return False
         t   = fin
         pos = hab
     return True
 
 
+def _llegada_estimada(
+    ctx:          ExecutionState,
+    num_hab:      str,
+    limpieza_map: dict[str, int],
+    graph:        HotelGraph
+) -> int:
+    """
+    Calcula el tiempo de llegada estimado a num_hab si se insertara
+    al final de la ruta actual del empleado, considerando el break.
+    """
+    t   = ctx.staff.turno_inicio_s
+    pos = ctx.staff.pos_inicio
+    bf  = ctx.staff.break_fin_s
+    bi  = ctx.staff.break_inicio_s
+
+    for hab in ctx.ruta:
+        tsl    = graph.traslado(pos, hab)
+        lim    = limpieza_map.get(hab, 0)
+        inicio = t + tsl
+        if bi <= inicio < bf:
+            inicio = bf
+        t   = inicio + lim
+        pos = hab
+
+    # Traslado desde la última posición hasta num_hab
+    tsl_final = graph.traslado(pos, num_hab)
+    llegada   = t + tsl_final
+    if bi <= llegada < bf:
+        llegada = bf
+    return llegada
+
+
 # ══════════════════════════════════════════════════════════════════
-# 6. ETAPA 1-A  –  Clarke-Wright Savings  [v3-1]
+# 6. ETAPA 1-A  –  Clarke-Wright Savings   [v5-2: ventanas]
 # ══════════════════════════════════════════════════════════════════
 
 class ClarkeWright:
     """
     Algoritmo de Clarke-Wright Savings adaptado a VRPTW hotelero.
 
-    El "ahorro" al fusionar las rutas (…→i→depot) y (depot→j→…) es:
-        saving(i, j) = traslado(depot, i) + traslado(depot, j)
-                       − traslado(i, j)
-
-    Implementación
-    ──────────────
-    1. Rutas triviales: para cada habitación, asignarla al empleado
-       más cercano que pueda atenderla (factibilidad dura verificada).
-    2. Lista de savings entre todos los pares de habitaciones asignadas
-       a empleados distintos.
-    3. Recorrer savings descendentes: fusionar (mover hj al final de
-       la ruta de i) si la ruta resultante sigue siendo factible.
-
-    Nota: "depot" de cada empleado es su _pos_inicio, no un nodo global.
+    [v5-2] Verifica VENTANA_SOLICITADA en los pasos 1 y 3 para que
+    la ventana de tiempo del huésped se respete desde el plan inicial,
+    no solo en el fallback greedy.
     """
+
+    @staticmethod
+    def _cumple_ventana(
+        room:         Room,
+        e:            ExecutionState,
+        limpieza_map: dict[str, int],
+        graph:        HotelGraph,
+        insertar_al_final: bool = True
+    ) -> bool:
+        """
+        [v5-2] Verifica que la llegada estimada a room cumpla su
+        ventana de tiempo. Siempre devuelve True si la habitación
+        no tiene restricción de ventana.
+        """
+        if not room.tiene_ventana:
+            return True
+        llegada = _llegada_estimada(e, room.num_hab, limpieza_map, graph)
+        return room.ventana_inicio_s <= llegada <= room.ventana_fin_s
 
     @staticmethod
     def asignar(
         rooms_sorted: list[Room],
-        staff:        list[StaffMember],
+        ctx:          PlanContext,
         graph:        HotelGraph,
         limpieza_map: dict[str, int],
         verbose:      bool = True
     ) -> dict[str, list[str]]:
-        """
-        Retorna {employee_id: [num_hab, …]} con la asignación inicial.
-        Modifica room.asignada_a y room.estado.
-        Avanza el reloj de cada empleado como efecto secundario —
-        se hace reset_reloj() antes de la fase DP para re-simular.
-        """
-        staff_idx: dict[str, StaffMember] = {s.employee_id: s for s in staff}
-        asig:  dict[str, str]       = {}   # num_hab → employee_id
-        rutas: dict[str, list[str]] = {s.employee_id: [] for s in staff}
+        estados   = ctx.todos
+        staff_idx = {e.employee_id: e for e in estados}
+        asig:  dict[str, str]       = {}
+        rutas: dict[str, list[str]] = {e.employee_id: [] for e in estados}
 
-        # ── Paso 1: asignación trivial ────────────────────────────
+        # ── Paso 1: asignación trivial (con ventanas) [v5-2] ──────
         for room in rooms_sorted:
-            mejor_s   = None
+            mejor_e   = None
             mejor_tsl = float('inf')
-            for s in staff:
-                tsl = graph.traslado(s.pos_actual, room.num_hab)
-                if s.puede_asignar(tsl, room.tiempo_limpieza_s) and tsl < mejor_tsl:
+            for e in estados:
+                tsl = graph.traslado(e.pos_actual, room.num_hab)
+                if not e.puede_asignar(tsl, room.tiempo_limpieza_s):
+                    continue
+                # [v5-2] Rechazar si viola ventana de tiempo
+                if not ClarkeWright._cumple_ventana(room, e, limpieza_map, graph):
+                    continue
+                if tsl < mejor_tsl:
                     mejor_tsl = tsl
-                    mejor_s   = s
+                    mejor_e   = e
 
-            if mejor_s is not None:
-                rutas[mejor_s.employee_id].append(room.num_hab)
-                mejor_s.avanzar_reloj(mejor_tsl, room.tiempo_limpieza_s, room.num_hab)
-                mejor_s.pos_actual = room.num_hab
-                asig[room.num_hab] = mejor_s.employee_id
-                room.estado        = 'ASIGNADA'
-                room.asignada_a    = mejor_s.employee_id
+            if mejor_e is not None:
+                rutas[mejor_e.employee_id].append(room.num_hab)
+                mejor_e.avanzar_reloj(mejor_tsl, room.tiempo_limpieza_s, room.num_hab)
+                mejor_e.pos_actual  = room.num_hab
+                asig[room.num_hab]  = mejor_e.employee_id
+                room.estado         = 'ASIGNADA'
+                room.asignada_a     = mejor_e.employee_id
             else:
                 room.estado = 'SIN_ASIGNAR'
 
-        # ── Paso 2: calcular savings entre pares de habs distintos ─
+        # ── Paso 2: calcular savings ───────────────────────────────
         habs_asig = [r.num_hab for r in rooms_sorted if r.estado == 'ASIGNADA']
+        rooms_idx_local = {r.num_hab: r for r in rooms_sorted}
         savings   = []
         for idx_i, hi in enumerate(habs_asig):
             eid_i = asig.get(hi)
             if eid_i is None:
                 continue
-            si = staff_idx[eid_i]
+            ei = staff_idx[eid_i]
             for hj in habs_asig[idx_i + 1:]:
                 eid_j = asig.get(hj)
                 if eid_j is None or eid_j == eid_i:
                     continue
-                sj = staff_idx[eid_j]
-                # Saving clásico usando la posición inicial de cada empleado
-                sv = (graph.traslado(si._pos_inicio, hi)
-                      + graph.traslado(sj._pos_inicio, hj)
+                ej = staff_idx[eid_j]
+                sv = (graph.traslado(ei.staff.pos_inicio, hi)
+                      + graph.traslado(ej.staff.pos_inicio, hj)
                       - graph.traslado(hi, hj))
                 savings.append((sv, hi, hj))
 
         savings.sort(reverse=True)
 
-        # ── Paso 3: fusionar rutas si saving > 0 y factible ───────
+        # ── Paso 3: fusionar rutas con ventana [v5-2] ─────────────
         for sv, hi, hj in savings:
             if sv <= 0:
                 break
@@ -521,149 +691,201 @@ class ClarkeWright:
             eid_j = asig.get(hj)
             if eid_i is None or eid_j is None or eid_i == eid_j:
                 continue
-            si = staff_idx[eid_i]
-            sj = staff_idx[eid_j]
+            ei = staff_idx[eid_i]
+            ej = staff_idx[eid_j]
 
-            lim_hj = limpieza_map.get(hj, 0)
-            tsl    = graph.traslado(hi, hj)
-
-            # Verificar capacidad neta de si para absorber hj
-            if not si.puede_asignar(tsl, lim_hj):
+            room_hj = rooms_idx_local.get(hj)
+            lim_hj  = limpieza_map.get(hj, 0)
+            tsl     = graph.traslado(hi, hj)
+            if not ei.puede_asignar(tsl, lim_hj):
                 continue
-
-            # Verificar factibilidad global de la ruta combinada
             ruta_candidata = rutas[eid_i] + [hj]
-            if not simular_ruta(si, ruta_candidata, limpieza_map, graph):
+            if not simular_ruta(ei, ruta_candidata, limpieza_map, graph):
+                continue
+            # [v5-2] No fusionar si hj tiene ventana y ei no la cumple
+            if room_hj and not ClarkeWright._cumple_ventana(
+                room_hj, ei, limpieza_map, graph
+            ):
                 continue
 
-            # Ejecutar fusión
             rutas[eid_i].append(hj)
             rutas[eid_j].remove(hj)
-            si.avanzar_reloj(tsl, lim_hj, hj)
-            si.pos_actual = hj
-            asig[hj] = eid_i
-
-            room_obj = next((r for r in rooms_sorted if r.num_hab == hj), None)
-            if room_obj:
-                room_obj.asignada_a = eid_i
+            ei.avanzar_reloj(tsl, lim_hj, hj)
+            ei.pos_actual = hj
+            asig[hj]      = eid_i
+            if room_hj:
+                room_hj.asignada_a = eid_i
 
         if verbose:
             total_asig = sum(len(v) for v in rutas.values())
             print(f"  [CWS] {total_asig} habitaciones distribuidas "
-                  f"en {len(staff)} rutas iniciales")
+                  f"en {len(estados)} rutas iniciales")
 
         return rutas
 
 
 # ══════════════════════════════════════════════════════════════════
-# 7. ETAPA 1-B  –  DP exacta por ruta (Held-Karp)  [v3-2]
+# 7. ETAPA 1-B  –  DP exacta por ruta (Held-Karp) + paralela
 # ══════════════════════════════════════════════════════════════════
+
+def _dp_worker(args: tuple) -> tuple[str, list[str], int, int]:
+    """
+    Worker ejecutado en un subproceso separado.
+    Función top-level para que pickle pueda serializarla.
+    """
+    employee_id, ruta, dist, nodes = args
+    n = len(ruta)
+
+    INF   = 10**9
+    dp    = [[INF] * (n + 1) for _ in range(1 << n)]
+    padre = [[-1]  * (n + 1) for _ in range(1 << n)]
+
+    for i in range(1, n + 1):
+        dp[1 << (i - 1)][i] = dist[0][i]
+
+    for mask in range(1, 1 << n):
+        for u in range(1, n + 1):
+            if not (mask & (1 << (u - 1))):
+                continue
+            if dp[mask][u] == INF:
+                continue
+            for v in range(1, n + 1):
+                if mask & (1 << (v - 1)):
+                    continue
+                new_mask = mask | (1 << (v - 1))
+                new_cost = dp[mask][u] + dist[u][v]
+                if new_cost < dp[new_mask][v]:
+                    dp[new_mask][v]    = new_cost
+                    padre[new_mask][v] = u
+
+    full_mask = (1 << n) - 1
+    best_cost = INF
+    last_node = -1
+    for i in range(1, n + 1):
+        if dp[full_mask][i] < best_cost:
+            best_cost = dp[full_mask][i]
+            last_node = i
+
+    if last_node == -1:
+        return employee_id, ruta, INF, INF
+
+    path_nodes = []
+    mask = full_mask
+    cur  = last_node
+    while cur != -1:
+        path_nodes.append(cur)
+        prev = padre[mask][cur]
+        mask = mask ^ (1 << (cur - 1))
+        cur  = prev
+    path_nodes.reverse()
+
+    ruta_opt       = [nodes[i] for i in path_nodes if i > 0]
+    costo_orig_real = sum(dist[i][i + 1] for i in range(n))
+    return employee_id, ruta_opt, costo_orig_real, best_cost
+
 
 class RouteDP:
     """
-    Optimización exacta del orden de visita para una ruta de un empleado.
-
-    Algoritmo: Held-Karp TSP con bitmask.
-      · Complejidad O(2^n · n²) tiempo, O(2^n · n) espacio.
-      · Para n ≤ 20: ~20 M operaciones → < 1 s por empleado.
-      · Para n > DP_MAX_N: fallback a 2-opt.
-
-    El nodo 0 es siempre pos_inicio (depot del empleado).
-    El costo de cada arco incluye traslado + tiempo de limpieza del destino,
-    modelando así el makespan real en vez de solo distancia.
+    Optimización de rutas con Held-Karp paralelo.
+    Acepta SchedulerConfig para dp_max_n.
     """
 
-    DP_MAX_N = 20
+    def __init__(self, config: SchedulerConfig | None = None):
+        self._cfg = config or SchedulerConfig()
 
-    @classmethod
-    def optimizar_ruta(
-        cls,
-        ruta:         list[str],
+    @property
+    def dp_max_n(self) -> int:
+        return self._cfg.dp_max_n
+
+    def optimizar_todas_las_rutas(
+        self,
+        ctx:          PlanContext,
         graph:        HotelGraph,
         limpieza_map: dict[str, int],
-        pos_inicio:   str
-    ) -> list[str]:
-        """
-        Devuelve la permutación de `ruta` con menor costo total.
-        No muta la lista original.
-        """
-        n = len(ruta)
-        if n <= 1:
-            return ruta[:]
-        if n > cls.DP_MAX_N:
-            return cls._two_opt(ruta, graph, limpieza_map, pos_inicio)
+        metrics:      'MetricsCollector',
+        verbose:      bool = True
+    ) -> dict[str, int]:
+        estados_con_ruta = [(e, e.ruta[:]) for e in ctx.todos if len(e.ruta) >= 2]
 
-        # Nodos: 0 = depot, 1..n = habitaciones en orden arbitrario
-        nodes = [pos_inicio] + ruta
-        N     = len(nodes)   # = n + 1
+        trabajos_dp   = []
+        trabajos_2opt = []
 
-        # dist[i][j] = traslado(i→j) + limpieza(j)
-        # (incluir limpieza en el arco evita recalcularla en la reconstrucción)
-        dist = [[0] * N for _ in range(N)]
-        for i in range(N):
-            for j in range(N):
-                if i != j:
-                    dist[i][j] = (graph.traslado(nodes[i], nodes[j])
-                                  + limpieza_map.get(nodes[j], 0))
+        for e, ruta in estados_con_ruta:
+            if len(ruta) > self.dp_max_n:
+                trabajos_2opt.append((e, ruta))
+                continue
+            nodes = [e.staff.pos_inicio] + ruta
+            N     = len(nodes)
+            dist  = [[0] * N for _ in range(N)]
+            for i in range(N):
+                for j in range(N):
+                    if i != j:
+                        dist[i][j] = (graph.traslado(nodes[i], nodes[j])
+                                      + limpieza_map.get(nodes[j], 0))
+            trabajos_dp.append((e.employee_id, ruta, dist, nodes))
 
-        # ── Held-Karp ─────────────────────────────────────────────
-        INF   = float('inf')
-        # dp[mask][i] = costo mínimo para haber visitado exactamente
-        # el subconjunto 'mask' de habitaciones (bits 0..n-1),
-        # terminando en el nodo i (1-indexed).
-        dp    = [[INF] * N for _ in range(1 << n)]
-        padre = [[-1]  * N for _ in range(1 << n)]
+        ahorros: dict[str, int] = {}
 
-        # Base: desde depot al nodo i sin pasar por nadie más
-        for i in range(1, N):
-            mask        = 1 << (i - 1)
-            dp[mask][i] = dist[0][i]
+        for e, ruta in trabajos_2opt:
+            costo_orig = route_cost(ruta, graph, limpieza_map, e.staff.pos_inicio)
+            ruta_opt   = self._two_opt(ruta, graph, limpieza_map, e.staff.pos_inicio)
+            costo_opt  = route_cost(ruta_opt, graph, limpieza_map, e.staff.pos_inicio)
+            ahorro     = costo_orig - costo_opt
+            if costo_opt <= costo_orig:
+                e.ruta = ruta_opt
+            ahorros[e.employee_id] = ahorro
+            if verbose:
+                print(f"  {e.employee_id} [{e.shift_type}] "
+                      f"[2-opt n={len(ruta)}]: "
+                      f"{costo_orig//60}min → {costo_opt//60}min | "
+                      f"Ahorro {ahorro//60}min")
 
-        # Llenar la tabla por subconjuntos crecientes
-        for mask in range(1, 1 << n):
-            for u in range(1, N):
-                bit_u = 1 << (u - 1)
-                if not (mask & bit_u):
-                    continue                    # u no está en este subconjunto
-                if dp[mask][u] == INF:
-                    continue
-                for v in range(1, N):
-                    bit_v = 1 << (v - 1)
-                    if mask & bit_v:
-                        continue               # v ya fue visitado
-                    new_mask = mask | bit_v
-                    new_cost = dp[mask][u] + dist[u][v]
-                    if new_cost < dp[new_mask][v]:
-                        dp[new_mask][v]    = new_cost
-                        padre[new_mask][v] = u
+        if not trabajos_dp:
+            return ahorros
 
-        # ── Reconstruir la mejor ruta ──────────────────────────────
-        full_mask = (1 << n) - 1
-        best_cost = INF
-        last_node = -1
-        for i in range(1, N):
-            if dp[full_mask][i] < best_cost:
-                best_cost = dp[full_mask][i]
-                last_node = i
+        n_workers   = min(len(trabajos_dp), os.cpu_count() or 1)
+        estados_idx = {e.employee_id: e for e, _ in estados_con_ruta}
 
-        if last_node == -1:
-            return ruta[:]   # sin solución (no debería ocurrir)
+        t_dp = time.perf_counter()
+        try:
+            with ProcessPoolExecutor(max_workers=n_workers) as pool:
+                futuros = {
+                    pool.submit(_dp_worker, args): args[0]
+                    for args in trabajos_dp
+                }
+                for futuro in as_completed(futuros):
+                    eid, ruta_opt, costo_orig, costo_opt = futuro.result()
+                    e = estados_idx.get(eid)
+                    if e is None:
+                        continue
+                    ahorro = max(0, costo_orig - costo_opt)
+                    if costo_opt <= costo_orig and ruta_opt:
+                        e.ruta = ruta_opt
+                    ahorros[eid] = ahorro
+                    if verbose:
+                        print(f"  {eid} [{e.shift_type}] "
+                              f"[DP n={len(e.ruta)}]: "
+                              f"{costo_orig//60}min → {costo_opt//60}min | "
+                              f"Ahorro {ahorro//60}min")
+        except Exception as exc:
+            if verbose:
+                print(f"   Pool falló ({exc}), ejecutando DP secuencial")
+            for args in trabajos_dp:
+                eid, ruta_opt, costo_orig, costo_opt = _dp_worker(args)
+                e = estados_idx.get(eid)
+                if e and costo_opt <= costo_orig and ruta_opt:
+                    e.ruta = ruta_opt
+                ahorros[eid] = max(0, costo_orig - costo_opt)
 
-        # Reconstrucción hacia atrás
-        path_nodes = []
-        mask = full_mask
-        cur  = last_node
-        while cur != -1:
-            path_nodes.append(cur)
-            prev = padre[mask][cur]
-            mask = mask ^ (1 << (cur - 1))
-            cur  = prev
-        path_nodes.reverse()
+        elapsed_dp = time.perf_counter() - t_dp
+        metrics.registrar('dp_tiempo_s', elapsed_dp)
 
-        # Convertir índices a num_hab (excluir nodo 0 = depot)
-        return [nodes[i] for i in path_nodes if i > 0]
+        if verbose:
+            print(f"  [DP paralela] {len(trabajos_dp)} rutas en {elapsed_dp:.2f}s "
+                  f"({n_workers} workers)")
 
-    # ── 2-opt fallback ────────────────────────────────────────────
+        return ahorros
+
     @staticmethod
     def _two_opt(
         route:        list[str],
@@ -687,239 +909,433 @@ class RouteDP:
 
 
 # ══════════════════════════════════════════════════════════════════
-# 8. ETAPA 1-C / ETAPA 2  –  Variable Neighborhood Search  [v3-3]
+# 8. ETAPA 1-C / ETAPA 2  –  Variable Neighborhood Search
 # ══════════════════════════════════════════════════════════════════
 
 class VNS:
     """
-    Variable Neighborhood Search para refinamiento global y reparación.
+    Variable Neighborhood Search (first-improvement).
 
-    Warm-start: toma el plan actual como solución inicial y aplica
-    movimientos de vecindad hasta que no haya mejora o se agote
-    MAX_VNS_SEC segundos.
+    Tres vecindarios: N1 Or-opt, N2 Relocate, N3 2-opt*.
+    Acepta SchedulerConfig para max_vns_sec.
 
-    Tres vecindarios explorados en orden (first-improvement):
-      N1 Or-opt   : reposiciona 1 hab dentro de su propia ruta
-      N2 Relocate : mueve 1 hab de la ruta de un empleado a otro
-      N3 2-opt*   : intercambia sufijos entre las rutas de dos empleados
-
-    La estrategia first-improvement garantiza convergencia rápida
-    (objetivo: < 3 s por llamada típica con 15-30 empleados).
+    [v5-3] _two_opt_star actualiza room.asignada_a tras intercambiar
+    sufijos entre rutas de dos empleados distintos.
     """
 
-    MAX_VNS_SEC = 4.0
+    def __init__(self, config: SchedulerConfig | None = None):
+        self._cfg = config or SchedulerConfig()
 
-    # ── Costo total del plan ──────────────────────────────────────
+    @property
+    def max_vns_sec(self) -> float:
+        return self._cfg.max_vns_sec
+
     @staticmethod
     def plan_cost(
-        staff:        list[StaffMember],
+        estados:      list[ExecutionState],
         graph:        HotelGraph,
         limpieza_map: dict[str, int]
     ) -> int:
         return sum(
-            route_cost(s.ruta, graph, limpieza_map, s._pos_inicio)
-            for s in staff
+            route_cost(e.ruta, graph, limpieza_map, e.staff.pos_inicio)
+            for e in estados
         )
 
-    # ── N1: Or-opt dentro de una sola ruta ───────────────────────
     @staticmethod
     def _or_opt(
-        s:            StaffMember,
+        e:            ExecutionState,
         graph:        HotelGraph,
         limpieza_map: dict[str, int]
     ) -> bool:
-        """
-        Prueba cada reposicionamiento (i → j) de una hab dentro de
-        la misma ruta. Acepta y retorna True en la primera mejora.
-        """
-        best_cost = route_cost(s.ruta, graph, limpieza_map, s._pos_inicio)
-        n = len(s.ruta)
+        best_cost = route_cost(e.ruta, graph, limpieza_map, e.staff.pos_inicio)
+        n = len(e.ruta)
         for i in range(n):
-            hab   = s.ruta[i]
-            resto = s.ruta[:i] + s.ruta[i + 1:]
+            hab   = e.ruta[i]
+            resto = e.ruta[:i] + e.ruta[i + 1:]
             for j in range(len(resto) + 1):
                 nueva = resto[:j] + [hab] + resto[j:]
-                if nueva == s.ruta:
+                if nueva == e.ruta:
                     continue
-                c = route_cost(nueva, graph, limpieza_map, s._pos_inicio)
-                if c < best_cost and simular_ruta(s, nueva, limpieza_map, graph):
-                    s.ruta    = nueva
+                c = route_cost(nueva, graph, limpieza_map, e.staff.pos_inicio)
+                if c < best_cost and simular_ruta(e, nueva, limpieza_map, graph):
+                    e.ruta    = nueva
                     best_cost = c
                     return True
         return False
 
-    # ── N2: Relocate entre dos rutas ─────────────────────────────
     @staticmethod
     def _relocate(
-        sa:           StaffMember,
-        sb:           StaffMember,
+        ea:           ExecutionState,
+        eb:           ExecutionState,
         graph:        HotelGraph,
         limpieza_map: dict[str, int],
         rooms_idx:    dict[str, Room]
     ) -> bool:
-        """
-        Mueve 1 hab de la ruta de sa a la mejor posición en la ruta
-        de sb si mejora el costo combinado y ambas rutas son factibles.
-        Retorna True en la primera mejora encontrada.
-        """
         costo_actual = (
-            route_cost(sa.ruta, graph, limpieza_map, sa._pos_inicio)
-            + route_cost(sb.ruta, graph, limpieza_map, sb._pos_inicio)
+            route_cost(ea.ruta, graph, limpieza_map, ea.staff.pos_inicio)
+            + route_cost(eb.ruta, graph, limpieza_map, eb.staff.pos_inicio)
         )
-
-        for i, hab in enumerate(sa.ruta):
+        for i, hab in enumerate(ea.ruta):
             lim_hab      = limpieza_map.get(hab, 0)
-            ruta_a_nueva = sa.ruta[:i] + sa.ruta[i + 1:]
-
-            for j in range(len(sb.ruta) + 1):
-                ruta_b_nueva = sb.ruta[:j] + [hab] + sb.ruta[j:]
-
-                # Verificar capacidad básica de sb
-                tsl_test = graph.traslado(sb._pos_inicio, hab)
-                if not sb.puede_asignar(tsl_test, lim_hab):
+            ruta_a_nueva = ea.ruta[:i] + ea.ruta[i + 1:]
+            for j in range(len(eb.ruta) + 1):
+                ruta_b_nueva = eb.ruta[:j] + [hab] + eb.ruta[j:]
+                tsl_test = graph.traslado(eb.staff.pos_inicio, hab)
+                if not eb.puede_asignar(tsl_test, lim_hab):
                     continue
-                # Verificar factibilidad de la ruta completa de sb
-                if not simular_ruta(sb, ruta_b_nueva, limpieza_map, graph):
+                if not simular_ruta(eb, ruta_b_nueva, limpieza_map, graph):
                     continue
-                # Verificar factibilidad de la ruta reducida de sa
-                if ruta_a_nueva and not simular_ruta(sa, ruta_a_nueva, limpieza_map, graph):
+                if ruta_a_nueva and not simular_ruta(ea, ruta_a_nueva, limpieza_map, graph):
                     continue
-
                 costo_nuevo = (
-                    route_cost(ruta_a_nueva, graph, limpieza_map, sa._pos_inicio)
-                    + route_cost(ruta_b_nueva, graph, limpieza_map, sb._pos_inicio)
+                    route_cost(ruta_a_nueva, graph, limpieza_map, ea.staff.pos_inicio)
+                    + route_cost(ruta_b_nueva, graph, limpieza_map, eb.staff.pos_inicio)
                 )
                 if costo_nuevo < costo_actual:
-                    sa.ruta = ruta_a_nueva
-                    sb.ruta = ruta_b_nueva
+                    ea.ruta = ruta_a_nueva
+                    eb.ruta = ruta_b_nueva
                     room_obj = rooms_idx.get(hab)
                     if room_obj:
-                        room_obj.asignada_a = sb.employee_id
+                        room_obj.asignada_a = eb.employee_id
                     return True
         return False
 
-    # ── N3: 2-opt* entre dos rutas ────────────────────────────────
     @staticmethod
     def _two_opt_star(
-        sa:           StaffMember,
-        sb:           StaffMember,
+        ea:           ExecutionState,
+        eb:           ExecutionState,
         graph:        HotelGraph,
-        limpieza_map: dict[str, int]
+        limpieza_map: dict[str, int],
+        rooms_idx:    dict[str, Room]     # [v5-3] necesario para actualizar metadatos
     ) -> bool:
         """
-        Intercambia sufijos: nueva_a = sa[:i] + sb[j:]
-                              nueva_b = sb[:j] + sa[i:]
-        Retorna True en la primera mejora factible.
+        [v5-3] Ahora recibe rooms_idx y actualiza room.asignada_a
+        para todas las habitaciones que cambian de empleado al
+        intercambiar sufijos entre ea y eb.
         """
         costo_actual = (
-            route_cost(sa.ruta, graph, limpieza_map, sa._pos_inicio)
-            + route_cost(sb.ruta, graph, limpieza_map, sb._pos_inicio)
+            route_cost(ea.ruta, graph, limpieza_map, ea.staff.pos_inicio)
+            + route_cost(eb.ruta, graph, limpieza_map, eb.staff.pos_inicio)
         )
-
-        for i in range(1, len(sa.ruta)):
-            for j in range(1, len(sb.ruta)):
-                nueva_a = sa.ruta[:i] + sb.ruta[j:]
-                nueva_b = sb.ruta[:j] + sa.ruta[i:]
-
-                if not simular_ruta(sa, nueva_a, limpieza_map, graph):
+        for i in range(1, len(ea.ruta)):
+            for j in range(1, len(eb.ruta)):
+                nueva_a = ea.ruta[:i] + eb.ruta[j:]
+                nueva_b = eb.ruta[:j] + ea.ruta[i:]
+                if not simular_ruta(ea, nueva_a, limpieza_map, graph):
                     continue
-                if not simular_ruta(sb, nueva_b, limpieza_map, graph):
+                if not simular_ruta(eb, nueva_b, limpieza_map, graph):
                     continue
-
                 costo_nuevo = (
-                    route_cost(nueva_a, graph, limpieza_map, sa._pos_inicio)
-                    + route_cost(nueva_b, graph, limpieza_map, sb._pos_inicio)
+                    route_cost(nueva_a, graph, limpieza_map, ea.staff.pos_inicio)
+                    + route_cost(nueva_b, graph, limpieza_map, eb.staff.pos_inicio)
                 )
                 if costo_nuevo < costo_actual:
-                    sa.ruta = nueva_a
-                    sb.ruta = nueva_b
+                    # Sufijos que cambian de propietario
+                    sufijo_a_a_eb = ea.ruta[i:]   # van de ea → eb
+                    sufijo_eb_a_a = eb.ruta[j:]   # van de eb → ea
+                    ea.ruta = nueva_a
+                    eb.ruta = nueva_b
+                    # [v5-3] Actualizar metadatos de rooms
+                    for hab in sufijo_a_a_eb:
+                        room_obj = rooms_idx.get(hab)
+                        if room_obj:
+                            room_obj.asignada_a = eb.employee_id
+                    for hab in sufijo_eb_a_a:
+                        room_obj = rooms_idx.get(hab)
+                        if room_obj:
+                            room_obj.asignada_a = ea.employee_id
                     return True
         return False
 
-    # ── Bucle VNS principal ───────────────────────────────────────
-    @classmethod
     def ejecutar(
-        cls,
-        staff:        list[StaffMember],
+        self,
+        ctx:          PlanContext,
         graph:        HotelGraph,
         limpieza_map: dict[str, int],
         rooms_idx:    dict[str, Room],
+        metrics:      'MetricsCollector',
         verbose:      bool = True
     ) -> int:
-        """
-        Ejecuta VNS sobre el plan completo hasta convergencia o timeout.
-        Retorna el ahorro total en segundos respecto al plan de entrada.
-        """
-        staff_activo  = [s for s in staff if s.ruta]
-        if not staff_activo:
+        activos = ctx.activos
+        if not activos:
             return 0
 
-        costo_inicial = cls.plan_cost(staff_activo, graph, limpieza_map)
+        costo_inicial = self.plan_cost(activos, graph, limpieza_map)
         t_inicio      = time.perf_counter()
         iteraciones   = 0
         mejora_global = True
 
-        while mejora_global and (time.perf_counter() - t_inicio) < cls.MAX_VNS_SEC:
+        while mejora_global and (time.perf_counter() - t_inicio) < self.max_vns_sec:
             mejora_global = False
-
-            # N1: Or-opt en cada ruta individual
-            for s in staff_activo:
-                if len(s.ruta) >= 2:
-                    if cls._or_opt(s, graph, limpieza_map):
+            for e in activos:
+                if len(e.ruta) >= 2:
+                    if self._or_opt(e, graph, limpieza_map):
                         mejora_global = True
 
-            # N2 + N3: entre todos los pares de empleados con ruta no vacía
             pares = [
-                (sa, sb)
-                for idx_a, sa in enumerate(staff_activo)
-                for sb in staff_activo[idx_a + 1:]
-                if sa.ruta and sb.ruta
+                (ea, eb)
+                for idx_a, ea in enumerate(activos)
+                for eb in activos[idx_a + 1:]
+                if ea.ruta and eb.ruta
             ]
-            for sa, sb in pares:
-                if (time.perf_counter() - t_inicio) >= cls.MAX_VNS_SEC:
+            for ea, eb in pares:
+                if (time.perf_counter() - t_inicio) >= self.max_vns_sec:
                     break
-                if cls._relocate(sa, sb, graph, limpieza_map, rooms_idx):
+                if self._relocate(ea, eb, graph, limpieza_map, rooms_idx):
                     mejora_global = True
                     continue
-                if cls._two_opt_star(sa, sb, graph, limpieza_map):
+                # [v5-3] Pasar rooms_idx a _two_opt_star
+                if self._two_opt_star(ea, eb, graph, limpieza_map, rooms_idx):
                     mejora_global = True
 
             iteraciones += 1
 
-        costo_final = cls.plan_cost(staff_activo, graph, limpieza_map)
+        costo_final = self.plan_cost(activos, graph, limpieza_map)
         ahorro      = costo_inicial - costo_final
         elapsed     = time.perf_counter() - t_inicio
 
+        metrics.registrar('vns_iteraciones',  iteraciones)
+        metrics.registrar('vns_ahorro_s',     ahorro)
+        metrics.registrar('vns_tiempo_s',     elapsed)
+        metrics.registrar('vns_costo_inicial', costo_inicial)
+        metrics.registrar('vns_costo_final',   costo_final)
+
         if verbose:
+            gap_pct = (ahorro / costo_inicial * 100) if costo_inicial > 0 else 0
             print(f"  [VNS] {iteraciones} iter | "
-                  f"Ahorro {ahorro // 60} min | "
+                  f"Ahorro {ahorro // 60} min ({gap_pct:.1f}%) | "
                   f"Tiempo {elapsed:.2f}s")
         return ahorro
 
 
 # ══════════════════════════════════════════════════════════════════
-# 9. SCHEDULER v3  –  Orquesta Etapas 1 y 2
+# MetricsCollector
+# ══════════════════════════════════════════════════════════════════
+
+class MetricsCollector:
+    """
+    Registra métricas de cada planificación y reparación.
+    Sin cambios respecto a v4 salvo que reparaciones_REINSERCION
+    se agrega como contador nuevo.
+    """
+
+    def __init__(self, fecha: str = '', metodo: str = 'cws_dp'):
+        self._datos: dict = {
+            'fecha':                fecha,
+            'metodo':               metodo,
+            'ts_inicio':            time.time(),
+            'ts_fin':               None,
+            'duracion_total_s':     None,
+            'cws_tiempo_s':         None,
+            'dp_tiempo_s':          None,
+            'vns_tiempo_s':         None,
+            'vns_iteraciones':      None,
+            'vns_ahorro_s':         None,
+            'vns_costo_inicial':    None,
+            'vns_costo_final':      None,
+            'vns_gap_pct':          None,
+            'total_rooms':          None,
+            'rooms_asignadas':      None,
+            'rooms_sin_asignar':    None,
+            'total_staff':          None,
+            'reparaciones_total':          0,
+            'reparaciones_DND':            0,
+            'reparaciones_CAMBIO_URGENTE': 0,
+            'reparaciones_VENTANA':        0,
+            'reparaciones_REINSERCION':    0,   # [v5-1]
+            'fallback_greedy':      False,
+        }
+
+    def registrar(self, clave: str, valor):
+        if clave in self._datos:
+            self._datos[clave] = valor
+
+    def registrar_reparacion(self, tipo: str):
+        self._datos['reparaciones_total'] += 1
+        key = f'reparaciones_{tipo}'
+        if key in self._datos:
+            self._datos[key] += 1
+
+    def registrar_plan(self, rooms: list[Room], staff: list[StaffMember]):
+        sin_asig = sum(1 for r in rooms if r.estado in ('SUCIA', 'SIN_ASIGNAR'))
+        self._datos['total_rooms']       = len(rooms)
+        self._datos['rooms_asignadas']   = len(rooms) - sin_asig
+        self._datos['rooms_sin_asignar'] = sin_asig
+        self._datos['total_staff']       = len(staff)
+
+    def cerrar(self):
+        self._datos['ts_fin']           = time.time()
+        self._datos['duracion_total_s'] = (
+            self._datos['ts_fin'] - self._datos['ts_inicio']
+        )
+        if self._datos['vns_costo_inicial']:
+            ci = self._datos['vns_costo_inicial']
+            cf = self._datos['vns_costo_final'] or ci
+            self._datos['vns_gap_pct'] = (ci - cf) / ci * 100 if ci > 0 else 0
+
+    def resumen(self) -> str:
+        d = self._datos
+        lines = [
+            "─" * 55,
+            f"  MÉTRICAS  {d['fecha']}  [{d['metodo']}]",
+            "─" * 55,
+        ]
+        if d['duracion_total_s'] is not None:
+            lines.append(f"  Duración total:   {d['duracion_total_s']:.2f}s")
+        for etapa, key in [('CWS', 'cws_tiempo_s'),
+                           ('DP ', 'dp_tiempo_s'),
+                           ('VNS', 'vns_tiempo_s')]:
+            val = d[key]
+            if val is not None:
+                lines.append(f"  Tiempo {etapa}:       {val:.2f}s")
+        if d['vns_ahorro_s'] is not None:
+            lines.append(
+                f"  VNS gap:          {d['vns_ahorro_s']//60}min "
+                f"({d.get('vns_gap_pct', 0):.1f}%) "
+                f"en {d['vns_iteraciones']} iter"
+            )
+        if d['total_rooms'] is not None:
+            lines.append(
+                f"  Rooms:            {d['rooms_asignadas']}/{d['total_rooms']} "
+                f"asignadas  |  {d['rooms_sin_asignar']} sin asignar"
+            )
+        if d['reparaciones_total'] > 0:
+            lines.append(
+                f"  Reparaciones:     {d['reparaciones_total']} total  "
+                f"(DND:{d['reparaciones_DND']}  "
+                f"URGENTE:{d['reparaciones_CAMBIO_URGENTE']}  "
+                f"VENTANA:{d['reparaciones_VENTANA']}  "
+                f"REINSERC:{d['reparaciones_REINSERCION']})"
+            )
+        if d['fallback_greedy']:
+            lines.append("   Fallback greedy activado")
+        lines.append("─" * 55)
+        return "\n".join(lines)
+
+    def exportar_json(self, path: str):
+        datos_export = {
+            k: v for k, v in self._datos.items()
+            if k not in ('ts_inicio', 'ts_fin')
+        }
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(datos_export, f, ensure_ascii=False, indent=2)
+        print(f"  📄 Métricas exportadas a {path}")
+
+    def como_dataframe(self) -> pd.DataFrame:
+        return pd.DataFrame([self._datos])
+
+    def como_dict(self) -> dict:
+        return dict(self._datos)
+
+
+# ══════════════════════════════════════════════════════════════════
+# 9. SCHEDULER v5  –  Orquesta Etapas 1 y 2
 # ══════════════════════════════════════════════════════════════════
 
 class Scheduler:
     """
-    Planificador diario v3.
+    Planificador diario v5.
 
-    planificar(rooms, staff, metodo='cws_dp', verbose=True)
-      · metodo='cws_dp'  → CWS [E1-A] + DP Held-Karp [E1-B] + VNS [E1-C]
-      · metodo='greedy'  → Greedy + 2-opt (fallback de v2)
-
-    Si CWS+DP supera MAX_PLAN_SEC segundos, cae automáticamente al greedy.
-
-    reparar(evento, staff, rooms, verbose=True)
-      · Aplica VNS warm-start sobre el plan existente tras un evento.
-      · Eventos soportados: DND | CAMBIO_URGENTE | VENTANA
+    Cambios respecto a v4:
+      · Acepta SchedulerConfig en el constructor [v5-4].
+        Instancia RouteDP y VNS con ese mismo config.
+      · _insertar_sin_asignar(): fase de reinserción post-DND [v5-1].
+      · Llama ctx.sincronizar_rooms(rooms) tras cada optimización [v5-3].
+      · ClarkeWright.asignar() verifica ventanas en pasos 1 y 3 [v5-2].
     """
 
-    MAX_PLAN_SEC = 60.0
+    def __init__(
+        self,
+        graph:  HotelGraph,
+        config: SchedulerConfig | None = None
+    ):
+        self.graph   = graph
+        self._cfg    = config or SchedulerConfig()
+        self._dp     = RouteDP(self._cfg)
+        self._vns    = VNS(self._cfg)
 
-    def __init__(self, graph: HotelGraph):
-        self.graph = graph
+    # ─────────────────────────────────────────────────────────────
+    # [v5-1]  Reinserción de habitaciones sin asignar
+    # ─────────────────────────────────────────────────────────────
+    def _insertar_sin_asignar(
+        self,
+        rooms:        list[Room],
+        ctx:          PlanContext,
+        limpieza_map: dict[str, int],
+        metrics:      MetricsCollector,
+        verbose:      bool = True
+    ) -> int:
+        """
+        [v5-1] Intenta insertar cada habitación SIN_ASIGNAR en la
+        ruta del empleado cuyo coste incremental sea mínimo y factible.
+
+        Se ejecuta antes de VNS en reparar() para garantizar que las
+        habitaciones liberadas por un evento DND vuelvan al plan.
+        VNS luego las reubica si mejoran el plan global.
+
+        Retorna el número de habitaciones reinsertadas.
+        """
+        sin_asignar = [
+            r for r in rooms
+            if r.estado in ('SUCIA', 'SIN_ASIGNAR') and not r.es_dnd
+        ]
+        if not sin_asignar:
+            return 0
+
+        estados    = ctx.todos
+        reinsertadas = 0
+
+        for room in sin_asignar:
+            lim = limpieza_map.get(room.num_hab, room.tiempo_limpieza_s)
+            mejor_e        = None
+            mejor_costo    = float('inf')
+            mejor_pos_ins  = -1
+
+            for e in estados:
+                # Probar inserción en cada posición de la ruta
+                for pos in range(len(e.ruta) + 1):
+                    ruta_candidata = e.ruta[:pos] + [room.num_hab] + e.ruta[pos:]
+                    # Verificar ventana si aplica
+                    if room.tiene_ventana:
+                        # Reconstruir llegada con la ruta candidata
+                        e_temporal_ruta = e.ruta[:]
+                        e.ruta = ruta_candidata
+                        cumple = ClarkeWright._cumple_ventana(
+                            room, e, limpieza_map, self.graph
+                        )
+                        e.ruta = e_temporal_ruta
+                        if not cumple:
+                            continue
+                    if not simular_ruta(e, ruta_candidata, limpieza_map, self.graph):
+                        continue
+                    costo_nuevo = route_cost(
+                        ruta_candidata, self.graph, limpieza_map, e.staff.pos_inicio
+                    )
+                    costo_viejo = route_cost(
+                        e.ruta, self.graph, limpieza_map, e.staff.pos_inicio
+                    )
+                    delta = costo_nuevo - costo_viejo
+                    if delta < mejor_costo:
+                        mejor_costo   = delta
+                        mejor_e       = e
+                        mejor_pos_ins = pos
+
+            if mejor_e is not None:
+                mejor_e.ruta.insert(mejor_pos_ins, room.num_hab)
+                mejor_e.sincronizar_pos_post_opt()
+                room.estado     = 'ASIGNADA'
+                room.asignada_a = mejor_e.employee_id
+                reinsertadas   += 1
+                metrics.registrar_reparacion('REINSERCION')
+                if verbose:
+                    print(f"   [{room.num_hab}] reinsertada en "
+                          f"{mejor_e.employee_id} pos={mejor_pos_ins} "
+                          f"(delta={mejor_costo//60}min)")
+
+        if verbose and reinsertadas:
+            print(f"  [Reinserción] {reinsertadas}/{len(sin_asignar)} "
+                  f"habitaciones reincorporadas al plan")
+        return reinsertadas
 
     # ─────────────────────────────────────────────────────────────
     # ETAPA 1: Plan maestro
@@ -930,268 +1346,239 @@ class Scheduler:
         staff:   list[StaffMember],
         metodo:  str  = 'cws_dp',
         verbose: bool = True
-    ) -> dict[str, list[str]]:
-        """
-        Genera el plan maestro del día.
+    ) -> tuple[dict[str, list[str]], PlanContext, MetricsCollector]:
+        g       = self.graph
+        metrics = MetricsCollector(metodo=metodo)
+        ctx     = PlanContext(staff)
+        t0      = time.perf_counter()
 
-        Parámetros
-        ----------
-        rooms  : lista de Room cargada con Loader.desde_reservaciones()
-        staff  : lista de StaffMember cargada con Loader.desde_fleet()
-        metodo : 'cws_dp' (default) | 'greedy'
-        verbose: imprime progreso en consola
-        """
-        g  = self.graph
-        t0 = time.perf_counter()
-
-        # 1. Tiempos de limpieza
         for r in rooms:
             r.tiempo_limpieza_s = g.limpieza(r.tpo_cama, r.cpo, r.desc)
 
-        # 2. Priorizar
-        rooms_sorted = Prioritizer.rank(rooms, g)
+        rooms_sorted = Prioritizer.rank(rooms, g, self._cfg)
         limpieza_map = {r.num_hab: r.tiempo_limpieza_s for r in rooms}
         rooms_idx    = {r.num_hab: r for r in rooms}
 
         if verbose:
             self._print_priorizacion(rooms_sorted, g)
 
-        # 3. Elegir algoritmo
         if metodo == 'greedy':
-            return self._planificar_greedy(
-                rooms_sorted, staff, g, limpieza_map, verbose
+            rutas = self._planificar_greedy(
+                rooms_sorted, ctx, g, limpieza_map, metrics, verbose
             )
+            ctx.sincronizar_rooms(rooms)   # [v5-3]
+            metrics.registrar_plan(rooms, staff)
+            metrics.cerrar()
+            return rutas, ctx, metrics
 
         # ── CWS + DP + VNS ───────────────────────────────────────
         if verbose:
-            print("\n ETAPA 1-A: Clarke-Wright Savings")
+            print("\nETAPA 1-A: Clarke-Wright Savings")
 
         try:
-            # E1-A: CWS
+            t_cws = time.perf_counter()
             rutas = ClarkeWright.asignar(
-                rooms_sorted, staff, g, limpieza_map, verbose
+                rooms_sorted, ctx, g, limpieza_map, verbose
             )
-            # Actualizar s.ruta desde el resultado de CWS
-            for s in staff:
-                s.ruta = rutas.get(s.employee_id, [])
+            metrics.registrar('cws_tiempo_s', time.perf_counter() - t_cws)
 
-            elapsed = time.perf_counter() - t0
-            if elapsed > self.MAX_PLAN_SEC:
-                raise TimeoutError(
-                    f"CWS tardó {elapsed:.1f}s — activando fallback greedy"
-                )
+            for e in ctx.todos:
+                e.ruta = rutas.get(e.employee_id, [])
 
-            # E1-B: DP exacta por ruta
+            if (time.perf_counter() - t0) > self._cfg.max_plan_sec:
+                raise TimeoutError("CWS excedió max_plan_sec")
+
             if verbose:
-                print("\n ETAPA 1-B: DP exacta por ruta (Held-Karp)")
+                print("\nETAPA 1-B: DP Held-Karp paralela")
 
-            for s in staff:
-                if len(s.ruta) < 2:
-                    continue
+            self._dp.optimizar_todas_las_rutas(ctx, g, limpieza_map, metrics, verbose)
 
-                ruta_orig  = s.ruta[:]
-                costo_orig = route_cost(ruta_orig, g, limpieza_map, s._pos_inicio)
+            for e in ctx.todos:
+                rutas[e.employee_id] = e.ruta
+                e.sincronizar_pos_post_opt()
 
-                ruta_opt  = RouteDP.optimizar_ruta(
-                    s.ruta, g, limpieza_map, s._pos_inicio
-                )
-                costo_opt = route_cost(ruta_opt, g, limpieza_map, s._pos_inicio)
+            ctx.sincronizar_rooms(rooms)   # [v5-3]
 
-                # Aceptar solo si mejora (nunca empeorar)
-                if costo_opt <= costo_orig:
-                    s.ruta                   = ruta_opt
-                    rutas[s.employee_id]     = ruta_opt
-
-                s.sincronizar_pos_post_opt()
-
-                if verbose:
-                    metodo_str = ('DP' if len(ruta_orig) <= RouteDP.DP_MAX_N
-                                  else '2-opt')
-                    ahorro_min = (costo_orig - route_cost(
-                        s.ruta, g, limpieza_map, s._pos_inicio)) // 60
-                    print(f"  {s.employee_id} ({s.shift_type}) "
-                          f"[{metodo_str}]: {len(s.ruta)} habs | "
-                          f"Antes {costo_orig // 60}min → "
-                          f"Después {route_cost(s.ruta, g, limpieza_map, s._pos_inicio) // 60}min | "
-                          f"Ahorro {ahorro_min}min")
-
-            # E1-C: VNS post-plan (refinamiento global)
             if verbose:
-                print("\n ETAPA 1-C: VNS post-plan (refinamiento global)")
-            VNS.ejecutar(staff, g, limpieza_map, rooms_idx, verbose)
+                print("\nETAPA 1-C: VNS refinamiento global")
 
-            # Sincronizar rutas finales
-            for s in staff:
-                rutas[s.employee_id] = s.ruta
-                s.sincronizar_pos_post_opt()
+            self._vns.ejecutar(ctx, g, limpieza_map, rooms_idx, metrics, verbose)
 
-            elapsed_total = time.perf_counter() - t0
+            for e in ctx.todos:
+                rutas[e.employee_id] = e.ruta
+                e.sincronizar_pos_post_opt()
+
+            ctx.sincronizar_rooms(rooms)   # [v5-3]
+
+            metrics.registrar_plan(rooms, staff)
+            metrics.cerrar()
+
             if verbose:
-                total_asig  = sum(len(v) for v in rutas.values())
-                sin_asignar = [r.num_hab for r in rooms
-                               if r.estado == 'SIN_ASIGNAR']
-                print(f"\n Plan maestro listo en {elapsed_total:.2f}s | "
-                      f"{total_asig} asignadas | "
-                      f"{len(sin_asignar)} sin asignar")
+                elapsed  = time.perf_counter() - t0
+                sin_asig = metrics.como_dict()['rooms_sin_asignar']
+                print(f"\nPlan listo en {elapsed:.2f}s | "
+                      f"{sum(len(v) for v in rutas.values())} asignadas | "
+                      f"{sin_asig} sin asignar")
+                print(metrics.resumen())
 
-            return rutas
+            return rutas, ctx, metrics
 
         except Exception as exc:
             if verbose:
-                print(f"\n  CWS+DP falló ({exc}) — usando Greedy como fallback")
-            # Reset completo antes del fallback
-            for s in staff:
-                s.reset_reloj()
-                s.ruta = []
+                print(f"\n CWS+DP falló ({exc}) - usando Greedy como fallback")
+            metrics.registrar('fallback_greedy', True)
+            ctx.reset()
             for r in rooms:
                 r.estado     = 'SUCIA'
                 r.asignada_a = None
-            return self._planificar_greedy(
-                rooms_sorted, staff, g, limpieza_map, verbose
+            rutas = self._planificar_greedy(
+                rooms_sorted, ctx, g, limpieza_map, metrics, verbose
             )
+            ctx.sincronizar_rooms(rooms)   # [v5-3]
+            metrics.registrar_plan(rooms, staff)
+            metrics.cerrar()
+            return rutas, ctx, metrics
 
-    # ─────────────────────────────────────────────────────────────
-    # Greedy + 2-opt  (fallback, idéntico a v2)
-    # ─────────────────────────────────────────────────────────────
+    # ── Greedy fallback ───────────────────────────────────────────
     def _planificar_greedy(
         self,
         rooms_sorted: list[Room],
-        staff:        list[StaffMember],
+        ctx:          PlanContext,
         graph:        HotelGraph,
         limpieza_map: dict[str, int],
+        metrics:      MetricsCollector,
         verbose:      bool
     ) -> dict[str, list[str]]:
         if verbose:
-            print("\n🔄 GREEDY FALLBACK")
+            print("\nGREEDY")
 
-        asignaciones: dict[str, list[str]] = {s.employee_id: [] for s in staff}
+        estados = ctx.todos
+        asig:   dict[str, list[str]] = {e.employee_id: [] for e in estados}
 
         for room in rooms_sorted:
-            mejor_staff = None
-            mejor_costo = float('inf')
-            for s in staff:
-                tsl = graph.traslado(s.pos_actual, room.num_hab)
-                if not s.puede_asignar(tsl, room.tiempo_limpieza_s):
+            mejor_e   = None
+            mejor_tsl = float('inf')
+            for e in estados:
+                tsl = graph.traslado(e.pos_actual, room.num_hab)
+                if not e.puede_asignar(tsl, room.tiempo_limpieza_s):
                     continue
                 if room.tiene_ventana:
-                    llegada = s.tiempo_actual_s + tsl
+                    llegada = e.tiempo_actual_s + tsl
                     if not (room.ventana_inicio_s <= llegada <= room.ventana_fin_s):
                         continue
-                if tsl < mejor_costo:
-                    mejor_costo = tsl
-                    mejor_staff = s
+                if tsl < mejor_tsl:
+                    mejor_tsl = tsl
+                    mejor_e   = e
 
-            if mejor_staff is not None:
-                tsl = graph.traslado(mejor_staff.pos_actual, room.num_hab)
-                mejor_staff.avanzar_reloj(tsl, room.tiempo_limpieza_s, room.num_hab)
-                mejor_staff.ruta.append(room.num_hab)
-                asignaciones[mejor_staff.employee_id].append(room.num_hab)
-                mejor_staff.pos_actual = room.num_hab
-                room.estado            = 'ASIGNADA'
-                room.asignada_a        = mejor_staff.employee_id
+            if mejor_e is not None:
+                tsl = graph.traslado(mejor_e.pos_actual, room.num_hab)
+                mejor_e.avanzar_reloj(tsl, room.tiempo_limpieza_s, room.num_hab)
+                mejor_e.ruta.append(room.num_hab)
+                asig[mejor_e.employee_id].append(room.num_hab)
+                mejor_e.pos_actual = room.num_hab
+                room.estado        = 'ASIGNADA'
+                room.asignada_a    = mejor_e.employee_id
             else:
                 room.estado = 'SIN_ASIGNAR'
 
-        # 2-opt por ruta
         if verbose:
             print("  2-opt post-greedy:")
-        for s in staff:
-            if len(s.ruta) > 2:
-                ruta_orig = s.ruta[:]
-                s.ruta    = RouteDP._two_opt(
-                    s.ruta, graph, limpieza_map, s._pos_inicio
+        for e in estados:
+            if len(e.ruta) > 2:
+                ruta_orig = e.ruta[:]
+                e.ruta    = RouteDP._two_opt(
+                    e.ruta, graph, limpieza_map, e.staff.pos_inicio
                 )
-                asignaciones[s.employee_id] = s.ruta
+                asig[e.employee_id] = e.ruta
                 if verbose:
-                    co = route_cost(ruta_orig, graph, limpieza_map, s._pos_inicio)
-                    cn = route_cost(s.ruta,    graph, limpieza_map, s._pos_inicio)
-                    print(f"    {s.employee_id}: {len(s.ruta)} habs | "
-                          f"Ahorro {(co - cn) // 60}min")
-            s.sincronizar_pos_post_opt()
+                    co = route_cost(ruta_orig, graph, limpieza_map, e.staff.pos_inicio)
+                    cn = route_cost(e.ruta,    graph, limpieza_map, e.staff.pos_inicio)
+                    print(f"    {e.employee_id}: {len(e.ruta)} habs | "
+                          f"Ahorro {(co-cn)//60}min")
+            e.sincronizar_pos_post_opt()
 
-        return asignaciones
+        return asig
 
     # ─────────────────────────────────────────────────────────────
-    # ETAPA 2: Reparación dinámica con VNS
+    # ETAPA 2: Reparación dinámica
     # ─────────────────────────────────────────────────────────────
     def reparar(
         self,
         evento:  dict,
-        staff:   list[StaffMember],
+        ctx:     PlanContext,
         rooms:   list[Room],
+        metrics: MetricsCollector,
         verbose: bool = True
     ) -> dict[str, list[str]]:
         """
-        Procesa un evento en tiempo real y repara el plan con VNS.
+        Procesa un evento en tiempo real y repara el plan.
 
-        Eventos soportados
-        ------------------
-        {'tipo': 'DND',            'num_hab': '4201', 'timestamp_s': 39600}
-        {'tipo': 'CAMBIO_URGENTE', 'num_hab': '3101', 'timestamp_s': 43200}
-        {'tipo': 'VENTANA',        'num_hab': '5201',
-         'ventana_ini': 36000, 'ventana_fin': 43200, 'timestamp_s': 35000}
+        [v5-1] Para DND: tras remover la habitación, llama a
+        _insertar_sin_asignar() para que las rooms liberadas
+        (y cualquier otra pendiente) vuelvan al plan antes de VNS.
+
+        [v5-3] Llama ctx.sincronizar_rooms(rooms) al finalizar
+        para garantizar coherencia entre rutas y metadatos.
+
+        Eventos reconocidos:
+          {'tipo': 'DND',            'num_hab': '4201'}
+          {'tipo': 'CAMBIO_URGENTE', 'num_hab': '3101'}
+          {'tipo': 'VENTANA',        'num_hab': '5201',
+           'ventana_ini': 36000, 'ventana_fin': 43200}
         """
-        tipo    = evento.get('tipo')
+        tipo    = evento.get('tipo', '')
         num_hab = str(evento.get('num_hab', ''))
+        g       = self.graph
 
-        room_obj   = next((r for r in rooms   if r.num_hab == num_hab),    None)
-        staff_asig = next((s for s in staff   if num_hab in s.ruta),       None)
+        room_obj    = next((r for r in rooms if r.num_hab == num_hab), None)
+        estado_asig = next((e for e in ctx.todos if num_hab in e.ruta), None)
 
         limpieza_map = {r.num_hab: r.tiempo_limpieza_s for r in rooms}
         rooms_idx    = {r.num_hab: r for r in rooms}
 
-        if verbose:
-            print(f"\n🔧 REPARACIÓN [{tipo}] hab {num_hab}")
+        metrics.registrar_reparacion(tipo)
 
-        # ── Aplicar el evento ─────────────────────────────────────
+        if verbose:
+            print(f"\nREPARACIÓN [{tipo}] hab {num_hab}")
+
         if tipo == 'DND':
-            if staff_asig and room_obj:
-                staff_asig.ruta.remove(num_hab)
-                room_obj.estado     = 'SIN_ASIGNAR'
-                room_obj.asignada_a = None
+            if estado_asig and room_obj:
+                estado_asig.ruta.remove(num_hab)
+                room_obj.estado              = 'DND'   # estado especial, no reinsertar
+                room_obj.asignada_a          = None
+                room_obj.restriccion_huesped = 'DND'
                 if verbose:
-                    print(f"   DND: [{num_hab}] removida de "
-                          f"{staff_asig.employee_id}")
+                    print(f"  [{num_hab}] removida de {estado_asig.employee_id}")
+
+            # [v5-1] Reinsertar habitaciones sin asignar antes de VNS
+            self._insertar_sin_asignar(rooms, ctx, limpieza_map, metrics, verbose)
 
         elif tipo == 'CAMBIO_URGENTE':
             if room_obj:
-                # Buscar el empleado más cercano que pueda atenderla
-                mejor_s   = None
+                mejor_e   = None
                 mejor_tsl = float('inf')
-                for s in staff:
-                    tsl = self.graph.traslado(s.pos_actual, num_hab)
-                    if (s.puede_asignar(tsl, room_obj.tiempo_limpieza_s)
+                for e in ctx.todos:
+                    tsl = g.traslado(e.pos_actual, num_hab)
+                    if (e.puede_asignar(tsl, room_obj.tiempo_limpieza_s)
                             and tsl < mejor_tsl):
                         mejor_tsl = tsl
-                        mejor_s   = s
+                        mejor_e   = e
 
-                if mejor_s is None:
+                if mejor_e and estado_asig and mejor_e.employee_id != estado_asig.employee_id:
+                    estado_asig.ruta.remove(num_hab)
+                    mejor_e.ruta.insert(0, num_hab)
+                    room_obj.asignada_a = mejor_e.employee_id
                     if verbose:
-                        print(f"    CAMBIO_URGENTE: no hay empleado disponible para [{num_hab}]")
-                elif staff_asig and mejor_s.employee_id != staff_asig.employee_id:
-                    # Reasignar a otro empleado y ponerla al frente
-                    staff_asig.ruta.remove(num_hab)
-                    mejor_s.ruta.insert(0, num_hab)
-                    room_obj.asignada_a = mejor_s.employee_id
+                        print(f"  [{num_hab}] → {mejor_e.employee_id}")
+                elif estado_asig:
+                    estado_asig.ruta.remove(num_hab)
+                    estado_asig.ruta.insert(0, num_hab)
                     if verbose:
-                        print(f"   CAMBIO_URGENTE: [{num_hab}] → "
-                              f"{mejor_s.employee_id}")
-                elif staff_asig:
-                    # Mismo empleado, moverla al frente
-                    staff_asig.ruta.remove(num_hab)
-                    staff_asig.ruta.insert(0, num_hab)
-                    if verbose:
-                        print(f"   CAMBIO_URGENTE: [{num_hab}] al frente "
-                              f"de {staff_asig.employee_id}")
-                else:
-                    # La habitación no estaba asignada; insertarla en el empleado más cercano
-                    if mejor_s:
-                        mejor_s.ruta.insert(0, num_hab)
-                        room_obj.asignada_a = mejor_s.employee_id
-                        room_obj.estado     = 'ASIGNADA'
-                        if verbose:
-                            print(f"   CAMBIO_URGENTE: [{num_hab}] nueva → "
-                                  f"{mejor_s.employee_id}")
+                        print(f"  [{num_hab}] al frente de {estado_asig.employee_id}")
+                elif mejor_e:
+                    mejor_e.ruta.insert(0, num_hab)
+                    room_obj.asignada_a = mejor_e.employee_id
+                    room_obj.estado     = 'ASIGNADA'
 
         elif tipo == 'VENTANA':
             if room_obj:
@@ -1199,68 +1586,68 @@ class Scheduler:
                 room_obj.ventana_fin_s       = evento.get('ventana_fin', 0)
                 room_obj.restriccion_huesped = 'VENTANA_SOLICITADA'
                 if verbose:
-                    print(f"   VENTANA: [{num_hab}] "
+                    print(f"  [{num_hab}] "
                           f"{seg_a_hhmm(room_obj.ventana_inicio_s)}–"
                           f"{seg_a_hhmm(room_obj.ventana_fin_s)}")
 
-        # ── VNS para re-optimizar el plan completo ────────────────
-        VNS.ejecutar(staff, self.graph, limpieza_map, rooms_idx, verbose)
+        self._vns.ejecutar(ctx, g, limpieza_map, rooms_idx, metrics, verbose)
 
-        # Sincronizar posiciones
-        for s in staff:
-            s.sincronizar_pos_post_opt()
+        for e in ctx.todos:
+            e.sincronizar_pos_post_opt()
 
-        return {s.employee_id: s.ruta for s in staff}
+        ctx.sincronizar_rooms(rooms)   # [v5-3]
+
+        return ctx.rutas()
 
     # ─────────────────────────────────────────────────────────────
     # Salidas
     # ─────────────────────────────────────────────────────────────
     def resumen_detallado(
         self,
-        staff: list[StaffMember],
+        ctx:   PlanContext,
         rooms: list[Room]
     ) -> tuple[pd.DataFrame, list[str]]:
         rows = []
-        for s in staff:
-            habs_asig   = [r for r in rooms if r.asignada_a == s.employee_id]
+        for e in ctx.todos:
+            habs_asig   = [r for r in rooms if r.asignada_a == e.employee_id]
             t_limpieza  = sum(r.tiempo_limpieza_s for r in habs_asig)
-            utilizacion = (100 * s.tiempo_ocupado_s / s.tiempo_libre_s
-                           if s.tiempo_libre_s > 0 else 0)
+            utilizacion = (100 * e.tiempo_ocupado_s / e.staff.tiempo_libre_s
+                           if e.staff.tiempo_libre_s > 0 else 0)
             rows.append({
-                'Empleado':          s.employee_id,
-                'Nombre':            s.employee_name,
-                'Turno':             s.shift_type,
-                'Inicio turno':      seg_a_hhmm(s.turno_inicio_s),
-                'Fin turno':         seg_a_hhmm(s.turno_fin_s),
-                'Break':             (f"{seg_a_hhmm(s.break_inicio_s)} "
-                                      f"({s.break_dur_s // 60} min)"),
+                'Empleado':          e.employee_id,
+                'Nombre':            e.employee_name,
+                'Turno':             e.shift_type,
+                'Inicio turno':      seg_a_hhmm(e.staff.turno_inicio_s),
+                'Fin turno':         seg_a_hhmm(e.staff.turno_fin_s),
+                'Break':             (f"{seg_a_hhmm(e.staff.break_inicio_s)} "
+                                      f"({e.staff.break_dur_s // 60} min)"),
                 'Habitaciones':      len(habs_asig),
                 'Tiempo limpieza':   f"{t_limpieza // 60} min",
-                'Tiempo disponible': f"{s.tiempo_libre_s // 60} min",
+                'Tiempo disponible': f"{e.staff.tiempo_libre_s // 60} min",
                 'Utilización':       f"{utilizacion:.0f}%",
-                'Ruta (orden)':      ' → '.join(s.ruta),
+                'Ruta (orden)':      ' → '.join(e.ruta),
             })
         sin_asignar = [r.num_hab for r in rooms
                        if r.estado in ('SUCIA', 'SIN_ASIGNAR')]
         return pd.DataFrame(rows), sin_asignar
 
-    def log_por_empleado(self, staff: list[StaffMember]) -> pd.DataFrame:
+    def log_por_empleado(self, ctx: PlanContext) -> pd.DataFrame:
         rows = []
-        for s in staff:
+        for e in ctx.todos:
             break_entry = {
-                'employee_id':     s.employee_id,
-                'employee_name':   s.employee_name,
+                'employee_id':     e.employee_id,
+                'employee_name':   e.employee_name,
                 'num_hab':         '—',
                 'tipo':            'BREAK',
-                'traslado_inicio': seg_a_hhmm(s.break_inicio_s),
-                'tarea_inicio':    seg_a_hhmm(s.break_inicio_s),
-                'tarea_fin':       seg_a_hhmm(s.break_inicio_s + s.break_dur_s),
+                'traslado_inicio': seg_a_hhmm(e.staff.break_inicio_s),
+                'tarea_inicio':    seg_a_hhmm(e.staff.break_inicio_s),
+                'tarea_fin':       seg_a_hhmm(e.staff.break_fin_s),
                 'traslado_s':      0,
-                'limpieza_s':      s.break_dur_s,
+                'limpieza_s':      e.staff.break_dur_s,
             }
-            for entry in s.log:
-                rows.append({'employee_id':   s.employee_id,
-                             'employee_name': s.employee_name,
+            for entry in e.log:
+                rows.append({'employee_id':   e.employee_id,
+                             'employee_name': e.employee_name,
                              'tipo':          'LIMPIEZA',
                              **entry})
             rows.append(break_entry)
@@ -1269,12 +1656,9 @@ class Scheduler:
             df = df.sort_values(['employee_id', 'tarea_inicio'])
         return df
 
-    # ─────────────────────────────────────────────────────────────
-    # Print helpers
-    # ─────────────────────────────────────────────────────────────
     @staticmethod
     def _print_priorizacion(rooms_sorted: list[Room], graph: HotelGraph):
-        print("\n PRIORIZACIÓN (top 20)")
+        print("\n📋 PRIORIZACIÓN (top 20)")
         print(f"{'Hab':>7}  {'Edif':>4}  {'Piso':>4}  {'Evolución':>12}  "
               f"{'Tipo':>15}  {'VIP':>3}  {'Score':>7}  "
               f"{'Limpieza':>9}  {'Restricción':>18}")
@@ -1294,8 +1678,6 @@ class Scheduler:
 # ══════════════════════════════════════════════════════════════════
 
 if __name__ == '__main__':
-    import os
-
     BASE = r'C:\Users\luis\Desktop\TCA\TCA-Optimization'
 
     PATH_TRASLADOS     = os.path.join(BASE, r'data\solver\matriz_traslados_segundos.csv')
@@ -1303,76 +1685,65 @@ if __name__ == '__main__':
     PATH_RESERVACIONES = os.path.join(BASE, r'data\solver\dev\reservaciones_semana.csv')
     PATH_FLEET         = os.path.join(BASE, r'data\solver\dev\fleet.csv')
 
-    FECHA_DIA = '2026-05-29'   # viernes — día con más check-outs
-    DAY_KEY   = 'day_6'        # day_1=domingo … day_7=sábado
+    FECHA_DIA = '2026-05-29'
+    DAY_KEY   = 'day_6'
 
     print("=" * 60)
-    print(f"  TCA Optimization v3 – Plan del {FECHA_DIA}")
+    print(f"  TCA Optimization v5 – Plan del {FECHA_DIA}")
     print("=" * 60)
 
-    # 1. Grafo
-    graph = HotelGraph(PATH_TRASLADOS, PATH_LIMPIEZA)
+    # [v5-4] Config personalizable; los defaults son iguales a v4
+    cfg = SchedulerConfig(
+        dp_max_n    = 14,
+        max_vns_sec = 4.0,
+    )
 
-    # 2. Cargar datos
-    print("\n Cargando habitaciones sucias...")
+    graph     = HotelGraph(PATH_TRASLADOS, PATH_LIMPIEZA, config=cfg)
+    scheduler = Scheduler(graph, config=cfg)
+
+    print("\nCargando habitaciones sucias...")
     rooms = Loader.desde_reservaciones(PATH_RESERVACIONES, FECHA_DIA)
 
-    print("\n Cargando staff activo...")
+    print("\nCargando staff activo...")
     staff = Loader.desde_fleet(PATH_FLEET, DAY_KEY)
 
     if not rooms or not staff:
-        print("  Sin datos suficientes para planificar.")
+        print("Sin datos suficientes para planificar.")
     else:
-        # 3. Plan maestro CWS + DP + VNS
-        scheduler    = Scheduler(graph)
-        asignaciones = scheduler.planificar(
-            rooms, staff,
-            metodo='cws_dp',   # cambiar a 'greedy' para fallback manual
-            verbose=True
+        rutas, ctx, metrics = scheduler.planificar(
+            rooms, staff, metodo='cws_dp', verbose=True
         )
 
-        # 4. Resumen
-        print("\n RESUMEN DEL PLAN")
-        df_resumen, sin_asignar = scheduler.resumen_detallado(staff, rooms)
+        print("\nRESUMEN DEL PLAN")
+        df_resumen, sin_asignar = scheduler.resumen_detallado(ctx, rooms)
         print(df_resumen.to_string(index=False))
 
         if sin_asignar:
-            print(f"\n  Habitaciones SIN ASIGNAR ({len(sin_asignar)}): "
-                  f"{sin_asignar}")
+            print(f"\nSin asignar ({len(sin_asignar)}): {sin_asignar}")
 
-        # 5. Log con timestamps
-        print("\n LOG DE TAREAS (primeros 30 registros)")
-        df_log = scheduler.log_por_empleado(staff)
+        print("\nLOG (primeros 30 registros)")
+        df_log = scheduler.log_por_empleado(ctx)
         print(df_log.head(30).to_string(index=False))
 
-        # 6. Reparación dinámica — DND a las 10:00
-        primera_asig = next((h for s in staff for h in s.ruta), None)
+        metrics.exportar_json(
+            os.path.join(BASE, f'data/solver/dev/metrics_{FECHA_DIA}.json')
+        )
+
+        # Simular DND – [v5-1] la habitación liberada se reinserta
+        primera_asig = next((h for e in ctx.todos for h in e.ruta), None)
         if primera_asig:
-            print("\n SIMULANDO EVENTO DINÁMICO — DND")
-            scheduler.reparar(
-                {'tipo': 'DND', 'num_hab': primera_asig,
-                 'timestamp_s': hhmm_a_seg('10:00')},
-                staff, rooms, verbose=True
+            print("\nSIMULANDO DND")
+            rutas = scheduler.reparar(
+                {'tipo': 'DND', 'num_hab': primera_asig},
+                ctx, rooms, metrics, verbose=True
             )
 
-        # 7. Reparación — CAMBIO_URGENTE
-        if staff and staff[0].ruta:
-            print("\n🔧 SIMULANDO EVENTO DINÁMICO — CAMBIO_URGENTE")
-            scheduler.reparar(
-                {'tipo': 'CAMBIO_URGENTE', 'num_hab': staff[0].ruta[0],
-                 'timestamp_s': hhmm_a_seg('11:30')},
-                staff, rooms, verbose=True
+        if ctx.activos and ctx.activos[0].ruta:
+            print("\nSIMULANDO CAMBIO_URGENTE")
+            rutas = scheduler.reparar(
+                {'tipo': 'CAMBIO_URGENTE', 'num_hab': ctx.activos[0].ruta[0]},
+                ctx, rooms, metrics, verbose=True
             )
 
-        # 8. Reparación — VENTANA
-        for s in staff:
-            if s.ruta:
-                print("\n🔧 SIMULANDO EVENTO DINÁMICO — VENTANA")
-                scheduler.reparar(
-                    {'tipo': 'VENTANA', 'num_hab': s.ruta[-1],
-                     'ventana_ini': hhmm_a_seg('14:00'),
-                     'ventana_fin': hhmm_a_seg('15:30'),
-                     'timestamp_s': hhmm_a_seg('13:00')},
-                    staff, rooms, verbose=True
-                )
-                break
+        metrics.cerrar()
+        print(metrics.resumen())
