@@ -1,0 +1,1526 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Motor de Ruteo v2 – TCA Optimization</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,700;1,9..144,300&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --tca-red:    #D34836;
+    --tca-bg:     #F5F5F5;
+    --tca-dark:   #242424;
+    --tca-muted:  #888;
+    --tca-line:   rgba(0,0,0,0.07);
+    --green:      #16a34a;
+    --blue:       #2563eb;
+    --amber:      #b45309;
+    --purple:     #7c3aed;
+
+    --sidebar-w: 260px;
+    --radius:    6px;
+    --mono:      'DM Mono', monospace;
+    --serif:     'Fraunces', Georgia, serif;
+    --sans:      'DM Sans', sans-serif;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { scroll-behavior: smooth; }
+
+  body {
+    background: var(--tca-bg);
+    color: var(--tca-dark);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.7;
+    display: flex;
+  }
+
+  /* ── SIDEBAR ────────────────────────────────────────────── */
+  .sidebar {
+    position: fixed;
+    top: 0; left: 0;
+    width: var(--sidebar-w);
+    height: 100vh;
+    background: var(--tca-dark);
+    color: #fff;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    z-index: 100;
+  }
+
+  .sidebar-header {
+    padding: 28px 24px 20px;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+  }
+
+  .sidebar-logo {
+    font-family: var(--serif);
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    color: var(--tca-red);
+  }
+
+  .sidebar-sub {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.4px;
+    color: rgba(255,255,255,0.35);
+    margin-top: 4px;
+  }
+
+  .sidebar-version {
+    display: inline-block;
+    margin-top: 10px;
+    background: var(--tca-red);
+    color: #fff;
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 3px;
+    letter-spacing: 0.5px;
+  }
+
+  nav { padding: 20px 0 40px; }
+
+  .nav-group { margin-bottom: 8px; }
+
+  .nav-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: rgba(255,255,255,0.25);
+    padding: 6px 24px;
+  }
+
+  nav a {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 24px;
+    color: rgba(255,255,255,0.6);
+    text-decoration: none;
+    font-size: 13.5px;
+    border-left: 2px solid transparent;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+  }
+
+  nav a:hover {
+    color: #fff;
+    background: rgba(255,255,255,0.05);
+    border-left-color: var(--tca-red);
+  }
+
+  nav a .dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.5;
+    flex-shrink: 0;
+  }
+
+  /* ── MAIN ───────────────────────────────────────────────── */
+  .main {
+    margin-left: var(--sidebar-w);
+    flex: 1;
+    min-height: 100vh;
+    padding: 0 0 80px;
+  }
+
+  /* ── HERO ───────────────────────────────────────────────── */
+  .hero {
+    background: var(--tca-dark);
+    color: #fff;
+    padding: 60px 64px 56px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .hero::before {
+    content: '';
+    position: absolute;
+    top: -80px; right: -80px;
+    width: 380px; height: 380px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(211,72,54,0.18) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  .hero-eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--tca-red);
+    margin-bottom: 16px;
+  }
+
+  .hero h1 {
+    font-family: var(--serif);
+    font-size: 48px;
+    font-weight: 700;
+    line-height: 1.1;
+    letter-spacing: -1.5px;
+    margin-bottom: 14px;
+  }
+
+  .hero h1 span { color: var(--tca-red); }
+
+  .hero-desc {
+    font-size: 16px;
+    color: rgba(255,255,255,0.55);
+    max-width: 580px;
+    line-height: 1.6;
+  }
+
+  .hero-meta {
+    margin-top: 32px;
+    display: flex;
+    gap: 32px;
+    flex-wrap: wrap;
+  }
+
+  .hero-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .hero-stat-val {
+    font-family: var(--mono);
+    font-size: 22px;
+    color: #fff;
+  }
+
+  .hero-stat-lbl {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: rgba(255,255,255,0.3);
+  }
+
+  /* ── CONTENT ────────────────────────────────────────────── */
+  .content {
+    padding: 0 64px;
+  }
+
+  /* ── SECTION ────────────────────────────────────────────── */
+  .section {
+    padding: 56px 0 0;
+  }
+
+  .section-anchor { display: block; position: relative; top: -80px; }
+
+  .section-header {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    margin-bottom: 28px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--tca-line);
+  }
+
+  .section-num {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--tca-red);
+    opacity: 0.7;
+  }
+
+  h2 {
+    font-family: var(--serif);
+    font-size: 30px;
+    font-weight: 700;
+    letter-spacing: -0.8px;
+    color: var(--tca-dark);
+  }
+
+  h3 {
+    font-family: var(--sans);
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--tca-dark);
+    margin: 24px 0 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  h3 .tag {
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 2px 7px;
+    border-radius: 3px;
+    font-weight: 400;
+  }
+
+  p { margin-bottom: 14px; color: #3a3a3a; }
+
+  /* ── CHANGELOG GRID ─────────────────────────────────────── */
+  .changelog-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+
+  .changelog-card {
+    background: #fff;
+    border: 1px solid var(--tca-line);
+    border-radius: var(--radius);
+    padding: 16px 18px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .changelog-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0;
+    width: 3px; height: 100%;
+  }
+
+  .changelog-card.fix::before  { background: var(--blue); }
+  .changelog-card.new::before  { background: var(--green); }
+
+  .changelog-badge {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 2px 7px;
+    border-radius: 3px;
+    margin-bottom: 8px;
+    font-weight: 500;
+  }
+
+  .badge-fix  { background: #eff6ff; color: var(--blue); }
+  .badge-new  { background: #f0fdf4; color: var(--green); }
+
+  .changelog-card h4 {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 5px;
+    color: var(--tca-dark);
+  }
+
+  .changelog-card p {
+    font-size: 12.5px;
+    color: var(--tca-muted);
+    margin: 0;
+    line-height: 1.55;
+  }
+
+  /* ── CLASS BOX ──────────────────────────────────────────── */
+  .class-box {
+    background: #fff;
+    border: 1px solid var(--tca-line);
+    border-radius: var(--radius);
+    margin-bottom: 20px;
+    overflow: hidden;
+  }
+
+  .class-box-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--tca-line);
+    background: #fafafa;
+  }
+
+  .class-name {
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--tca-dark);
+  }
+
+  .class-type {
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 3px 9px;
+    border-radius: 3px;
+  }
+
+  .type-class    { background: #f3f0ff; color: var(--purple); }
+  .type-dataclass{ background: #fff7ed; color: var(--amber); }
+  .type-func     { background: #f0fdf4; color: var(--green); }
+
+  .class-box-body { padding: 18px 20px; }
+
+  .class-desc {
+    font-size: 13.5px;
+    color: #4a4a4a;
+    margin-bottom: 16px;
+    line-height: 1.6;
+  }
+
+  /* ── ATTR TABLE ─────────────────────────────────────────── */
+  .attr-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+
+  .attr-table th {
+    text-align: left;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--tca-muted);
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--tca-line);
+    background: #fafafa;
+  }
+
+  .attr-table td {
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--tca-line);
+    vertical-align: top;
+  }
+
+  .attr-table tr:last-child td { border-bottom: none; }
+
+  .attr-table tr:hover td { background: #fafafa; }
+
+  .col-name  { font-family: var(--mono); font-size: 12.5px; color: var(--tca-dark); white-space: nowrap; }
+  .col-type  { font-family: var(--mono); font-size: 11px; color: var(--purple); white-space: nowrap; }
+  .col-default { font-family: var(--mono); font-size: 11px; color: var(--amber); }
+  .col-desc  { color: #5a5a5a; font-size: 12.5px; line-height: 1.5; }
+
+  /* ── METHOD LIST ────────────────────────────────────────── */
+  .method-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+
+  .method-item {
+    background: #fafafa;
+    border: 1px solid var(--tca-line);
+    border-radius: 5px;
+    padding: 12px 16px;
+  }
+
+  .method-sig {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: var(--blue);
+    margin-bottom: 5px;
+  }
+
+  .method-desc {
+    font-size: 12.5px;
+    color: #5a5a5a;
+    margin: 0;
+    line-height: 1.5;
+  }
+
+  /* ── CSV TABLE ──────────────────────────────────────────── */
+  .csv-block {
+    background: #fff;
+    border: 1px solid var(--tca-line);
+    border-radius: var(--radius);
+    margin-bottom: 20px;
+    overflow: hidden;
+  }
+
+  .csv-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--tca-line);
+    background: #fafafa;
+  }
+
+  .csv-icon {
+    width: 28px; height: 28px;
+    background: var(--green);
+    border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    color: #fff;
+    font-size: 12px;
+    font-family: var(--mono);
+    font-weight: 500;
+  }
+
+  .csv-filename {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--tca-dark);
+  }
+
+  .csv-path {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--tca-muted);
+    background: #f0f0f0;
+    border-radius: 3px;
+    padding: 2px 7px;
+    margin-left: auto;
+  }
+
+  .csv-body { padding: 0; overflow-x: auto; }
+
+  /* ── FLOW DIAGRAM ───────────────────────────────────────── */
+  .flow {
+    display: flex;
+    align-items: flex-start;
+    gap: 0;
+    margin: 24px 0;
+    overflow-x: auto;
+    padding: 4px 0 8px;
+  }
+
+  .flow-step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex: 1;
+    min-width: 110px;
+  }
+
+  .flow-circle {
+    width: 44px; height: 44px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono);
+    font-size: 16px;
+    font-weight: 500;
+    color: #fff;
+    margin-bottom: 10px;
+    flex-shrink: 0;
+  }
+
+  .flow-label {
+    font-size: 12px;
+    text-align: center;
+    color: var(--tca-dark);
+    font-weight: 500;
+    line-height: 1.3;
+    max-width: 100px;
+  }
+
+  .flow-sub {
+    font-size: 10.5px;
+    text-align: center;
+    color: var(--tca-muted);
+    line-height: 1.3;
+    max-width: 100px;
+    margin-top: 3px;
+  }
+
+  .flow-arrow {
+    flex-shrink: 0;
+    align-self: center;
+    margin-bottom: 34px;
+    color: var(--tca-muted);
+    font-size: 18px;
+    padding: 0 4px;
+  }
+
+  /* ── CODE BLOCK ─────────────────────────────────────────── */
+  .code-block {
+    background: var(--tca-dark);
+    border-radius: var(--radius);
+    padding: 18px 22px;
+    margin: 16px 0;
+    overflow-x: auto;
+    position: relative;
+  }
+
+  .code-block-label {
+    position: absolute;
+    top: 10px; right: 14px;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: rgba(255,255,255,0.25);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+
+  pre {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    color: #e2e8f0;
+    line-height: 1.7;
+    white-space: pre;
+  }
+
+  .kw  { color: #f472b6; }
+  .fn  { color: #60a5fa; }
+  .st  { color: #86efac; }
+  .cm  { color: rgba(255,255,255,0.3); font-style: italic; }
+  .nb  { color: #fbbf24; }
+  .op  { color: rgba(255,255,255,0.5); }
+
+  /* ── CALLOUT ────────────────────────────────────────────── */
+  .callout {
+    border-left: 3px solid;
+    border-radius: 0 5px 5px 0;
+    padding: 12px 16px;
+    margin: 16px 0;
+    font-size: 13.5px;
+  }
+
+  .callout-info  { border-color: var(--blue);  background: #eff6ff; color: #1d4ed8; }
+  .callout-warn  { border-color: var(--amber); background: #fffbeb; color: #92400e; }
+  .callout-ok    { border-color: var(--green); background: #f0fdf4; color: #166534; }
+
+  .callout strong { font-weight: 600; }
+
+  /* ── PRIORITY TABLE ─────────────────────────────────────── */
+  .priority-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--tca-line);
+  }
+  .priority-row:last-child { border-bottom: none; }
+
+  .p-rank {
+    font-family: var(--mono);
+    font-size: 13px;
+    width: 28px;
+    color: var(--tca-muted);
+  }
+
+  .p-bar-wrap { flex: 1; height: 6px; background: #eee; border-radius: 3px; }
+  .p-bar { height: 100%; border-radius: 3px; }
+
+  .p-label { font-size: 13px; font-weight: 500; width: 140px; color: var(--tca-dark); }
+  .p-value { font-family: var(--mono); font-size: 12px; color: var(--tca-muted); width: 60px; text-align: right; }
+
+  /* ── CONSTANTS BOX ──────────────────────────────────────── */
+  .constants-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin: 14px 0;
+  }
+
+  .const-card {
+    background: #fff;
+    border: 1px solid var(--tca-line);
+    border-radius: 5px;
+    padding: 12px 14px;
+  }
+
+  .const-name {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--purple);
+    margin-bottom: 4px;
+  }
+
+  .const-val {
+    font-family: var(--mono);
+    font-size: 18px;
+    font-weight: 500;
+    color: var(--tca-dark);
+  }
+
+  .const-desc {
+    font-size: 11px;
+    color: var(--tca-muted);
+    margin-top: 3px;
+    line-height: 1.4;
+  }
+
+  /* ── EVENT TYPES ────────────────────────────────────────── */
+  .event-list { display: flex; flex-direction: column; gap: 10px; }
+
+  .event-card {
+    background: #fff;
+    border: 1px solid var(--tca-line);
+    border-radius: 5px;
+    padding: 14px 18px;
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+  }
+
+  .event-badge {
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 3px 9px;
+    border-radius: 3px;
+    font-weight: 500;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+
+  .badge-dnd     { background: #fef2f2; color: var(--tca-red); }
+  .badge-urgente { background: #fff7ed; color: var(--amber); }
+  .badge-ventana { background: #eff6ff; color: var(--blue); }
+
+  .event-body h4 { font-size: 13.5px; font-weight: 600; margin-bottom: 4px; }
+  .event-body p  { font-size: 12.5px; color: var(--tca-muted); margin: 0; line-height: 1.5; }
+
+  /* ── FOOTER ─────────────────────────────────────────────── */
+  .doc-footer {
+    margin-top: 60px;
+    padding: 28px 64px;
+    border-top: 1px solid var(--tca-line);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--tca-muted);
+  }
+
+  .footer-brand {
+    font-family: var(--serif);
+    font-size: 16px;
+    color: var(--tca-dark);
+  }
+
+  /* ── UTILS ──────────────────────────────────────────────── */
+  .divider { height: 1px; background: var(--tca-line); margin: 32px 0; }
+  .mt8  { margin-top: 8px; }
+  .mt16 { margin-top: 16px; }
+
+  @media (max-width: 900px) {
+    .sidebar { display: none; }
+    .main { margin-left: 0; }
+    .hero, .content, .doc-footer { padding-left: 24px; padding-right: 24px; }
+    .changelog-grid { grid-template-columns: 1fr; }
+    .constants-grid { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════ SIDEBAR ══════════════════ -->
+<aside class="sidebar">
+  <div class="sidebar-header">
+    <div class="sidebar-logo">TCA</div>
+    <div class="sidebar-sub">Motor de Ruteo</div>
+    <div class="sidebar-version">v2.0</div>
+  </div>
+  <nav>
+    <div class="nav-group">
+      <div class="nav-label">Inicio</div>
+      <a href="#overview"><span class="dot"></span>Visión General</a>
+      <a href="#changelog"><span class="dot"></span>Changelog v2</a>
+      <a href="#arquitectura"><span class="dot"></span>Arquitectura</a>
+    </div>
+    <div class="nav-group">
+      <div class="nav-label">Módulos</div>
+      <a href="#hotel-graph"><span class="dot"></span>HotelGraph</a>
+      <a href="#entidades"><span class="dot"></span>Entidades</a>
+      <a href="#loader"><span class="dot"></span>Loader</a>
+      <a href="#prioritizer"><span class="dot"></span>Prioritizer</a>
+      <a href="#scheduler"><span class="dot"></span>Scheduler</a>
+      <a href="#2opt"><span class="dot"></span>Ruteo 2-opt</a>
+    </div>
+    <div class="nav-group">
+      <div class="nav-label">Datos</div>
+      <a href="#csvs"><span class="dot"></span>Archivos CSV</a>
+      <a href="#uso"><span class="dot"></span>Ejemplo de Uso</a>
+    </div>
+  </nav>
+</aside>
+
+<!-- ══════════════════ MAIN ══════════════════ -->
+<main class="main">
+
+  <!-- HERO -->
+  <div class="hero">
+    <div class="hero-eyebrow">TCA Optimization · Documentación Técnica</div>
+    <h1>Motor de <span>Ruteo</span><br>v2 (Mód. 2 + 3)</h1>
+    <p class="hero-desc">
+      Planificador diario de limpieza hotelera con reloj real por empleado,
+      restricciones de break como regla dura, criterio greedy unificado,
+      optimización 2-opt y reparación dinámica ante eventos en tiempo real.
+    </p>
+    <div class="hero-meta">
+      <div class="hero-stat">
+        <span class="hero-stat-val">6 FIX</span>
+        <span class="hero-stat-lbl">Correcciones vs v1</span>
+      </div>
+      <div class="hero-stat">
+        <span class="hero-stat-val">6 NEW</span>
+        <span class="hero-stat-lbl">Nuevas funciones</span>
+      </div>
+      <div class="hero-stat">
+        <span class="hero-stat-val">272</span>
+        <span class="hero-stat-lbl">Habitaciones soportadas</span>
+      </div>
+      <div class="hero-stat">
+        <span class="hero-stat-val">3</span>
+        <span class="hero-stat-lbl">Tipos de evento dinámico</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="content">
+
+    <!-- ── VISIÓN GENERAL ── -->
+    <div class="section" id="overview">
+      <span class="section-anchor"></span>
+      <div class="section-header">
+        <span class="section-num">01</span>
+        <h2>Visión General</h2>
+      </div>
+      <p>
+        El <strong>Motor de Ruteo v2</strong> resuelve el problema de asignación y secuenciación
+        de tareas de limpieza para una flota de empleados en un hotel multi-edificio.
+        Opera en dos etapas: <strong>Etapa 1</strong> genera el plan maestro del día mediante
+        un algoritmo greedy + 2-opt, y <strong>Etapa 2</strong> repara rutas individuales en
+        respuesta a eventos dinámicos (DND, ventanas solicitadas, cambios urgentes).
+      </p>
+      <p>
+        Todo el motor trabaja en <strong>segundos desde medianoche</strong> para operar
+        únicamente con aritmética entera y evitar el manejo de objetos <code>datetime</code>.
+        Por ejemplo, <code>07:00 → 25200</code>, <code>17:00 → 61200</code>.
+      </p>
+      <div class="callout callout-info">
+        <strong>Dependencias:</strong> pandas, numpy, dataclasses, math, typing. No requiere solver externo; la optimización es heurística.
+      </div>
+    </div>
+
+    <!-- ── CHANGELOG ── -->
+    <div class="section" id="changelog">
+      <span class="section-anchor"></span>
+      <div class="section-header">
+        <span class="section-num">02</span>
+        <h2>Changelog v2</h2>
+      </div>
+
+      <div class="changelog-grid">
+        <div class="changelog-card fix">
+          <div class="changelog-badge badge-fix">FIX-1</div>
+          <h4>Reloj interno real por empleado</h4>
+          <p>Reemplaza el contador simple <code>tiempo_ocupado_s</code>. Cada empleado tiene un reloj que avanza con traslados y limpiezas, saltando automáticamente el break.</p>
+        </div>
+        <div class="changelog-card fix">
+          <div class="changelog-badge badge-fix">FIX-2</div>
+          <h4>Break como restricción dura</h4>
+          <p><code>puede_asignar()</code> verifica que ninguna tarea cruce el bloque de break ni el fin de turno. En v1 el break existía en la entidad pero el scheduler lo ignoraba.</p>
+        </div>
+        <div class="changelog-card fix">
+          <div class="changelog-badge badge-fix">FIX-3</div>
+          <h4>Criterio greedy unificado</h4>
+          <p>v1 usaba <code>costo_total</code> para verificar y <code>costo_efectivo</code> con penalizaciones duplicadas para elegir. v2 usa un único <code>costo_efectivo</code> en ambas decisiones.</p>
+        </div>
+        <div class="changelog-card fix">
+          <div class="changelog-badge badge-fix">FIX-4</div>
+          <h4>pos_actual sincronizado post-2opt</h4>
+          <p>En v1, <code>pos_actual</code> quedaba apuntando al último destino greedy, no al optimizado. Ahora se actualiza al final de la ruta 2-opt. Crítico para reparación dinámica.</p>
+        </div>
+        <div class="changelog-card fix">
+          <div class="changelog-badge badge-fix">FIX-5</div>
+          <h4>Score de prioridad corregido</h4>
+          <p>v1: <code>W_PISO*(5-piso+1)</code> daba 100 pts al piso 1, igual que VIP. v2 usa escala relativa al piso máximo real del hotel, eliminando empates incorrectos.</p>
+        </div>
+        <div class="changelog-card new">
+          <div class="changelog-badge badge-new">NEW-1</div>
+          <h4>Room con espacio de estados</h4>
+          <p>Añade <code>estado_fisico</code>, <code>ocupacion</code>, <code>evolucion</code>, <code>restriccion_huesped</code>, <code>ventana_inicio_s</code>, <code>ventana_fin_s</code>.</p>
+        </div>
+        <div class="changelog-card new">
+          <div class="changelog-badge badge-new">NEW-2</div>
+          <h4>StaffMember desde fleet.csv</h4>
+          <p>Cargado con turno MORNING/AFTERNOON. Posición inicial derivada del turno; primer edificio asignado al inicio de jornada.</p>
+        </div>
+        <div class="changelog-card new">
+          <div class="changelog-badge badge-new">NEW-3</div>
+          <h4>Loader.desde_reservaciones()</h4>
+          <p>Construye el pool de habitaciones sucias del día directamente desde el CSV, respetando DND y aplicando la <code>prioridad_inicial</code>.</p>
+        </div>
+        <div class="changelog-card new">
+          <div class="changelog-badge badge-new">NEW-4</div>
+          <h4>Loader.desde_fleet()</h4>
+          <p>Carga staff activo filtrando <code>status=='WORK'</code> y convirtiendo horarios a segundos automáticamente.</p>
+        </div>
+        <div class="changelog-card new">
+          <div class="changelog-badge badge-new">NEW-5</div>
+          <h4>Scheduler.reparar()</h4>
+          <p>Interfaz de reparación dinámica. Recibe un evento (DND, VENTANA, CAMBIO_URGENTE) y aplica 2-opt local solo sobre la ruta del empleado afectado.</p>
+        </div>
+        <div class="changelog-card new">
+          <div class="changelog-badge badge-new">NEW-6</div>
+          <h4>resumen_detallado() con timestamps</h4>
+          <p>Genera el plan con tiempos reales (HH:MM) por habitación, incluyendo el bloque de break en el log de cada empleado.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── ARQUITECTURA ── -->
+    <div class="section" id="arquitectura">
+      <span class="section-anchor"></span>
+      <div class="section-header">
+        <span class="section-num">03</span>
+        <h2>Arquitectura del Sistema</h2>
+      </div>
+      <p>El flujo principal del motor sigue 4 etapas bien definidas:</p>
+
+      <div class="flow">
+        <div class="flow-step">
+          <div class="flow-circle" style="background:var(--blue)">①</div>
+          <div class="flow-label">HotelGraph</div>
+          <div class="flow-sub">Carga matrices de traslado y limpieza</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step">
+          <div class="flow-circle" style="background:var(--green)">②</div>
+          <div class="flow-label">Loader</div>
+          <div class="flow-sub">Construye Rooms y StaffMembers desde CSV</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step">
+          <div class="flow-circle" style="background:var(--amber)">③</div>
+          <div class="flow-label">Prioritizer</div>
+          <div class="flow-sub">Ordena habitaciones por score</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step">
+          <div class="flow-circle" style="background:var(--purple)">④</div>
+          <div class="flow-label">Scheduler</div>
+          <div class="flow-sub">Greedy + 2-opt + Reparación</div>
+        </div>
+        <div class="flow-arrow">→</div>
+        <div class="flow-step">
+          <div class="flow-circle" style="background:var(--tca-red)">⑤</div>
+          <div class="flow-label">Outputs</div>
+          <div class="flow-sub">Plan con timestamps + log por empleado</div>
+        </div>
+      </div>
+
+      <div class="callout callout-ok">
+        <strong>Etapa 2 – Reparación dinámica:</strong> cualquier evento en tiempo real puede disparar
+        <code>Scheduler.reparar()</code> para actualizar solo la ruta afectada sin recalcular el plan completo.
+      </div>
+    </div>
+
+    <!-- ── HOTEL GRAPH ── -->
+    <div class="section" id="hotel-graph">
+      <span class="section-anchor"></span>
+      <div class="section-header">
+        <span class="section-num">04</span>
+        <h2>HotelGraph</h2>
+      </div>
+
+      <div class="class-box">
+        <div class="class-box-header">
+          <span class="class-name">HotelGraph</span>
+          <span class="class-type type-class">class</span>
+        </div>
+        <div class="class-box-body">
+          <p class="class-desc">
+            Carga la matriz de traslados (272×272, en segundos) y la de tiempos de limpieza (en minutos).
+            Expone consultas de costo en segundos. Parsea códigos de habitación del formato
+            <code>EPPH</code> donde <strong>E</strong>=edificio, <strong>P</strong>=piso, <strong>HH</strong>=número.
+          </p>
+
+          <h3>Constantes</h3>
+          <div class="constants-grid">
+            <div class="const-card">
+              <div class="const-name">VIP_MULTIPLIER</div>
+              <div class="const-val">1.4×</div>
+              <div class="const-desc">Factor de penalización de tiempo para tipos VIP</div>
+            </div>
+            <div class="const-card">
+              <div class="const-name">INTER_FLOOR_SEC</div>
+              <div class="const-val">30 s</div>
+              <div class="const-desc">Fallback por piso de diferencia (si no está en matriz)</div>
+            </div>
+            <div class="const-card">
+              <div class="const-name">INTER_EDIF_SEC</div>
+              <div class="const-val">300 s</div>
+              <div class="const-desc">Fallback por edificio de diferencia</div>
+            </div>
+            <div class="const-card">
+              <div class="const-name">INTER_HAB_SEC</div>
+              <div class="const-val">10 s</div>
+              <div class="const-desc">Fallback por habitación de diferencia</div>
+            </div>
+          </div>
+
+          <h3>Tipos VIP</h3>
+          <p style="font-family:var(--mono);font-size:12px;color:var(--purple);background:#f3f0ff;padding:10px 14px;border-radius:4px;line-height:1.8">
+            STD SUPERIOR · SUITE 1 REC · SUITE 2 REC · SUITE STUDIO · FAMILIAR 5 · FAMILIAR 6 · PENT-HOUSE
+          </p>
+
+          <h3>Métodos</h3>
+          <div class="method-list">
+            <div class="method-item">
+              <div class="method-sig">traslado(origen: str, destino: str) → int</div>
+              <p class="method-desc">Tiempo de traslado en segundos entre dos habitaciones. Usa la matriz CSV; si la celda no existe aplica fallback Manhattan por edificio/piso/habitación.</p>
+            </div>
+            <div class="method-item">
+              <div class="method-sig">limpieza(tpo_cama: str, cpo: int = 2, desc: str = '') → int</div>
+              <p class="method-desc">Tiempo de limpieza en segundos: base por tipo + 5 min/persona adicional sobre 2. Si la habitación es VIP aplica <code>VIP_MULTIPLIER</code> al total.</p>
+            </div>
+            <div class="method-item">
+              <div class="method-sig">vip_multiplier(desc: str) → float</div>
+              <p class="method-desc">Retorna 1.4 si el tipo de descripción está en el conjunto VIP, 1.0 en caso contrario.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── ENTIDADES ── -->
+    <div class="section" id="entidades">
+      <span class="section-anchor"></span>
+      <div class="section-header">
+        <span class="section-num">05</span>
+        <h2>Entidades</h2>
+      </div>
+
+      <!-- Room -->
+      <div class="class-box">
+        <div class="class-box-header">
+          <span class="class-name">Room</span>
+          <span class="class-type type-dataclass">@dataclass</span>
+        </div>
+        <div class="class-box-body">
+          <p class="class-desc">
+            [NEW-1] Habitación sucia pendiente de limpiar. Incluye las 3 dimensiones del
+            espacio de estados del hotel: física, de ocupación y de evolución. Soporta
+            restricciones de huésped con ventanas de tiempo.
+          </p>
+
+          <h3>Campos principales</h3>
+          <table class="attr-table">
+            <thead>
+              <tr>
+                <th>Campo</th>
+                <th>Tipo</th>
+                <th>Default</th>
+                <th>Descripción</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td class="col-name">num_hab</td><td class="col-type">str</td><td class="col-default">—</td><td class="col-desc">Clave de habitación (ej. <code>'4201'</code>)</td></tr>
+              <tr><td class="col-name">tpo_cama</td><td class="col-type">str</td><td class="col-default">—</td><td class="col-desc">Tipo de cama para calcular tiempo de limpieza</td></tr>
+              <tr><td class="col-name">desc</td><td class="col-type">str</td><td class="col-default">—</td><td class="col-desc">Descripción del cuarto (determina si es VIP)</td></tr>
+              <tr><td class="col-name">cpo</td><td class="col-type">int</td><td class="col-default">—</td><td class="col-desc">Capacidad de personas (afecta tiempo de limpieza)</td></tr>
+              <tr><td class="col-name">evolucion</td><td class="col-type">str</td><td class="col-default">'PERMANENCIA'</td><td class="col-desc">CAMBIO | SALIDA | ENTRADA | PERMANENCIA | DISPONIBLE</td></tr>
+              <tr><td class="col-name">estado_fisico</td><td class="col-type">str</td><td class="col-default">'SUCIO'</td><td class="col-desc">LIMPIO | SUCIO | FUERA_DE_SERVICIO</td></tr>
+              <tr><td class="col-name">ocupacion</td><td class="col-type">str</td><td class="col-default">'LIBRE'</td><td class="col-desc">LIBRE | OCUPADO | EN_LIMPIEZA</td></tr>
+              <tr><td class="col-name">restriccion_huesped</td><td class="col-type">str</td><td class="col-default">'NINGUNA'</td><td class="col-desc">NINGUNA | DND | VENTANA_SOLICITADA</td></tr>
+              <tr><td class="col-name">ventana_inicio_s</td><td class="col-type">int</td><td class="col-default">0</td><td class="col-desc">Inicio de ventana en seg desde medianoche</td></tr>
+              <tr><td class="col-name">ventana_fin_s</td><td class="col-type">int</td><td class="col-default">0</td><td class="col-desc">Fin de ventana en seg desde medianoche</td></tr>
+              <tr><td class="col-name">prioridad</td><td class="col-type">float</td><td class="col-default">0.0</td><td class="col-desc">Score asignado por Prioritizer.rank()</td></tr>
+              <tr><td class="col-name">tiempo_limpieza_s</td><td class="col-type">int</td><td class="col-default">0</td><td class="col-desc">Calculado por Scheduler.planificar()</td></tr>
+              <tr><td class="col-name">estado</td><td class="col-type">str</td><td class="col-default">'SUCIA'</td><td class="col-desc">SUCIA | ASIGNADA | SIN_ASIGNAR</td></tr>
+              <tr><td class="col-name">asignada_a</td><td class="col-type">Optional[str]</td><td class="col-default">None</td><td class="col-desc">employee_id del empleado asignado</td></tr>
+            </tbody>
+          </table>
+
+          <h3>Propiedades calculadas</h3>
+          <div class="method-list mt8">
+            <div class="method-item">
+              <div class="method-sig">@property  es_dnd → bool</div>
+              <p class="method-desc">True si <code>restriccion_huesped == 'DND'</code>.</p>
+            </div>
+            <div class="method-item">
+              <div class="method-sig">@property  tiene_ventana → bool</div>
+              <p class="method-desc">True si <code>restriccion_huesped == 'VENTANA_SOLICITADA'</code>.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- StaffMember -->
+      <div class="class-box">
+        <div class="class-box-header">
+          <span class="class-name">StaffMember</span>
+          <span class="class-type type-dataclass">@dataclass</span>
+        </div>
+        <div class="class-box-body">
+          <p class="class-desc">
+            [FIX-1/2, NEW-2] Empleado con turno MORNING o AFTERNOON y reloj interno real.
+            El reloj (<code>tiempo_actual_s</code>) avanza con cada asignación y salta
+            automáticamente el bloque de break si una tarea aterrizaría durante él.
+          </p>
+
+          <h3>Campos de turno</h3>
+          <table class="attr-table">
+            <thead>
+              <tr><th>Campo</th><th>Tipo</th><th>Default</th><th>Descripción</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="col-name">employee_id</td><td class="col-type">str</td><td class="col-default">—</td><td class="col-desc">Identificador único del empleado</td></tr>
+              <tr><td class="col-name">employee_name</td><td class="col-type">str</td><td class="col-default">—</td><td class="col-desc">Nombre completo</td></tr>
+              <tr><td class="col-name">pos_actual</td><td class="col-type">str</td><td class="col-default">—</td><td class="col-desc">num_hab de posición lógica actual</td></tr>
+              <tr><td class="col-name">shift_type</td><td class="col-type">str</td><td class="col-default">'MORNING'</td><td class="col-desc">MORNING (07-17) | AFTERNOON (14-22)</td></tr>
+              <tr><td class="col-name">turno_inicio_s</td><td class="col-type">int</td><td class="col-default">25200</td><td class="col-desc">07:00 en segundos</td></tr>
+              <tr><td class="col-name">turno_fin_s</td><td class="col-type">int</td><td class="col-default">61200</td><td class="col-desc">17:00 en segundos</td></tr>
+              <tr><td class="col-name">break_inicio_s</td><td class="col-type">int</td><td class="col-default">39600</td><td class="col-desc">11:00 en segundos</td></tr>
+              <tr><td class="col-name">break_dur_s</td><td class="col-type">int</td><td class="col-default">1800</td><td class="col-desc">30 minutos en segundos</td></tr>
+            </tbody>
+          </table>
+
+          <h3>Métodos</h3>
+          <div class="method-list mt8">
+            <div class="method-item">
+              <div class="method-sig">puede_asignar(traslado_s: int, limpieza_s: int) → bool</div>
+              <p class="method-desc">[FIX-2] Verifica 3 condiciones: (1) tiempo libre neto suficiente, (2) la tarea no invade el break, (3) la tarea no supera el fin de turno.</p>
+            </div>
+            <div class="method-item">
+              <div class="method-sig">avanzar_reloj(traslado_s: int, limpieza_s: int, num_hab: str)</div>
+              <p class="method-desc">Registra la asignación en el log con timestamps reales y avanza el reloj interno. Si el traslado aterrizaría durante el break, salta al fin del break antes de iniciar la limpieza.</p>
+            </div>
+            <div class="method-item">
+              <div class="method-sig">sincronizar_pos_post_2opt()</div>
+              <p class="method-desc">[FIX-4] Actualiza <code>pos_actual</code> al último elemento de la ruta optimizada. Debe llamarse después de <code>route_2opt()</code>.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── LOADER ── -->
+    <div class="section" id="loader">
+      <span class="section-anchor"></span>
+      <div class="section-header">
+        <span class="section-num">06</span>
+        <h2>Loader</h2>
+      </div>
+
+      <div class="class-box">
+        <div class="class-box-header">
+          <span class="class-name">Loader</span>
+          <span class="class-type type-class">class (métodos estáticos)</span>
+        </div>
+        <div class="class-box-body">
+          <p class="class-desc">
+            [NEW-3/4] Fábrica de entidades. Centraliza el parseo de CSV para que el Scheduler
+            no dependa del formato de archivo directamente.
+          </p>
+
+          <div class="method-list">
+            <div class="method-item">
+              <div class="method-sig">@staticmethod  desde_reservaciones(path, fecha, solo_sucias=True) → list[Room]</div>
+              <p class="method-desc">
+                Filtra el CSV por fecha y <code>estado_fisico=='SUCIO'</code>. Excluye habitaciones DND del pool (las imprime como advertencia). Convierte ventanas de tiempo a segundos.
+                Las habitaciones con <code>evolucion=='CAMBIO'</code> recibirán prioridad máxima.
+              </p>
+            </div>
+            <div class="method-item">
+              <div class="method-sig">@staticmethod  desde_fleet(path, day, pos_inicio='8101') → list[StaffMember]</div>
+              <p class="method-desc">
+                Filtra por <code>day</code> (ej. <code>'day_6'</code>) y <code>status=='WORK'</code>.
+                Convierte <code>shift_start</code>/<code>shift_end</code>/<code>break_hour</code> a segundos.
+                Todos los empleados parten de <code>pos_inicio</code>.
+              </p>
+            </div>
+          </div>
+
+          <div class="callout callout-warn mt16">
+            <strong>Convención de días:</strong> <code>day_1</code> = domingo, <code>day_7</code> = sábado.
+            El campo <code>DAY_KEY</code> en el ejemplo de uso corresponde al día de la semana de <code>FECHA_DIA</code>.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── PRIORITIZER ── -->
+    <div class="section" id="prioritizer">
+      <span class="section-anchor"></span>
+      <div class="section-header">
+        <span class="section-num">07</span>
+        <h2>Prioritizer</h2>
+      </div>
+
+      <div class="class-box">
+        <div class="class-box-header">
+          <span class="class-name">Prioritizer</span>
+          <span class="class-type type-class">class (métodos de clase)</span>
+        </div>
+        <div class="class-box-body">
+          <p class="class-desc">
+            [FIX-5, NEW-1] Asigna un score de prioridad a cada habitación sucia.
+            Mayor score → se limpia antes. El cálculo es:
+            <code>score = bonus_evolucion + bonus_vip + piso_score + limpieza_score</code>
+          </p>
+
+          <h3>Pesos configurables</h3>
+          <div class="constants-grid">
+            <div class="const-card">
+              <div class="const-name">W_VIP</div>
+              <div class="const-val">100</div>
+              <div class="const-desc">Bonus si tipo ∈ VIP_TYPES</div>
+            </div>
+            <div class="const-card">
+              <div class="const-name">W_PISO</div>
+              <div class="const-val">15</div>
+              <div class="const-desc">Por nivel de piso (escala relativa)</div>
+            </div>
+            <div class="const-card">
+              <div class="const-name">W_LIMPIEZA</div>
+              <div class="const-val">5</div>
+              <div class="const-desc">Habitaciones más rápidas, ligera ventaja</div>
+            </div>
+            <div class="const-card">
+              <div class="const-name">MAX_PISO</div>
+              <div class="const-val">5</div>
+              <div class="const-desc">Piso máximo del hotel</div>
+            </div>
+          </div>
+
+          <h3>Bonus por evolución</h3>
+          <div style="background:#fff;border:1px solid var(--tca-line);border-radius:5px;padding:14px 18px;">
+            <div class="priority-row">
+              <span class="p-rank">#1</span>
+              <span class="p-label">CAMBIO</span>
+              <div class="p-bar-wrap"><div class="p-bar" style="width:100%;background:var(--tca-red)"></div></div>
+              <span class="p-value">9 999 pts</span>
+            </div>
+            <div class="priority-row">
+              <span class="p-rank">#2</span>
+              <span class="p-label">SALIDA</span>
+              <div class="p-bar-wrap"><div class="p-bar" style="width:2%;background:var(--amber)"></div></div>
+              <span class="p-value">200 pts</span>
+            </div>
+            <div class="priority-row">
+              <span class="p-rank">#3</span>
+              <span class="p-label">ENTRADA</span>
+              <div class="p-bar-wrap"><div class="p-bar" style="width:0.5%;background:var(--blue)"></div></div>
+              <span class="p-value">50 pts</span>
+            </div>
+            <div class="priority-row">
+              <span class="p-rank">#4</span>
+              <span class="p-label">PERMANENCIA</span>
+              <div class="p-bar-wrap"><div class="p-bar" style="width:1px;background:var(--tca-muted)"></div></div>
+              <span class="p-value">0 pts</span>
+            </div>
+          </div>
+
+          <div class="callout callout-info mt16">
+            <strong>CAMBIO</strong> devuelve el bonus directamente sin mezclar con VIP, piso, ni limpieza —
+            tiene precedencia absoluta sobre cualquier otro criterio.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── SCHEDULER ── -->
+    <div class="section" id="scheduler">
+      <span class="section-anchor"></span>
+      <div class="section-header">
+        <span class="section-num">08</span>
+        <h2>Scheduler</h2>
+      </div>
+
+      <div class="class-box">
+        <div class="class-box-header">
+          <span class="class-name">Scheduler</span>
+          <span class="class-type type-class">class</span>
+        </div>
+        <div class="class-box-body">
+          <p class="class-desc">
+            Planificador diario que integra los Módulos 2 y 3. Recibe el grafo en su constructor
+            y expone dos etapas: <code>planificar()</code> para el plan maestro y <code>reparar()</code>
+            para ajustes dinámicos.
+          </p>
+
+          <h3>Etapa 1 — planificar(rooms, staff, verbose=True)</h3>
+          <p>
+            Ejecuta el pipeline de 4 pasos: calcular tiempos de limpieza → priorizar con Prioritizer →
+            greedy con criterio unificado [FIX-3] y verificación de break [FIX-2] →
+            2-opt por ruta + sincronización [FIX-4].
+          </p>
+
+          <div class="code-block">
+            <span class="code-block-label">Python</span>
+            <pre><span class="cm"># Estructura del greedy</span>
+<span class="kw">for</span> room <span class="kw">in</span> rooms_sorted:
+    mejor_staff = <span class="nb">None</span>
+    mejor_costo = <span class="nb">float</span>(<span class="st">'inf'</span>)
+
+    <span class="kw">for</span> s <span class="kw">in</span> staff:
+        traslado_s = g.<span class="fn">traslado</span>(s.pos_actual, room.num_hab)
+
+        <span class="cm"># [FIX-2] Verificar break y fin de turno</span>
+        <span class="kw">if not</span> s.<span class="fn">puede_asignar</span>(traslado_s, room.tiempo_limpieza_s):
+            <span class="kw">continue</span>
+
+        <span class="cm"># [NEW-1] Verificar ventana solicitada</span>
+        <span class="kw">if</span> room.tiene_ventana:
+            llegada_est = s.tiempo_actual_s + traslado_s
+            <span class="kw">if not</span> (room.ventana_inicio_s &lt;= llegada_est &lt;= room.ventana_fin_s):
+                <span class="kw">continue</span>
+
+        <span class="cm"># [FIX-3] Un único costo_efectivo</span>
+        <span class="kw">if</span> traslado_s &lt; mejor_costo:
+            mejor_costo = traslado_s
+            mejor_staff = s</pre>
+          </div>
+
+          <h3>Etapa 2 — reparar(evento, staff, rooms, verbose=True)</h3>
+          <p>[NEW-5] Procesa un evento en tiempo real y repara solo la ruta afectada. Soporta 3 tipos:</p>
+
+          <div class="event-list">
+            <div class="event-card">
+              <span class="event-badge badge-dnd">DND</span>
+              <div class="event-body">
+                <h4>Do Not Disturb</h4>
+                <p>Remueve la habitación de la ruta del empleado asignado, la marca <code>SIN_ASIGNAR</code>, y aplica 2-opt local sobre la ruta reducida.</p>
+              </div>
+            </div>
+            <div class="event-card">
+              <span class="event-badge badge-urgente">CAMBIO_URGENTE</span>
+              <div class="event-body">
+                <h4>Cambio Urgente</h4>
+                <p>Busca al empleado con menor tiempo de llegada. Si es diferente al asignado, reasigna. En ambos casos mueve la habitación al frente de la ruta y sincroniza <code>pos_actual</code>.</p>
+              </div>
+            </div>
+            <div class="event-card">
+              <span class="event-badge badge-ventana">VENTANA</span>
+              <div class="event-body">
+                <h4>Ventana Solicitada</h4>
+                <p>Actualiza <code>ventana_inicio_s</code>, <code>ventana_fin_s</code> y <code>restriccion_huesped</code>. Si la ruta tiene más de 2 habitaciones, aplica 2-opt local para reordenar respetando la nueva ventana.</p>
+              </div>
+            </div>
+          </div>
+
+          <h3 style="margin-top:20px">Salidas</h3>
+          <div class="method-list">
+            <div class="method-item">
+              <div class="method-sig">resumen_detallado(staff, rooms) → (DataFrame, list[str])</div>
+              <p class="method-desc">Tabla resumen por empleado con inicio/fin de turno, break, habitaciones, tiempo de limpieza, utilización y ruta en orden. Retorna también la lista de habitaciones sin asignar.</p>
+            </div>
+            <div class="method-item">
+              <div class="method-sig">log_por_empleado(staff) → DataFrame</div>
+              <p class="method-desc">Log detallado de cada tarea con timestamps reales (traslado_inicio, tarea_inicio, tarea_fin), incluyendo el bloque de break como entrada especial. Ordenado por empleado y hora de inicio.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── 2-OPT ── -->
+    <div class="section" id="2opt">
+      <span class="section-anchor"></span>
+      <div class="section-header">
+        <span class="section-num">09</span>
+        <h2>Ruteo 2-opt</h2>
+      </div>
+
+      <div class="class-box">
+        <div class="class-box-header">
+          <span class="class-name">route_2opt · _route_cost</span>
+          <span class="class-type type-func">funciones</span>
+        </div>
+        <div class="class-box-body">
+          <p class="class-desc">
+            Mejora local 2-opt: invierte segmentos de la ruta hasta que ningún intercambio
+            reduzca el costo total. Complejidad O(n²) por iteración. Se usa tanto en el plan
+            maestro (por cada empleado) como en la reparación dinámica (solo sobre la ruta afectada).
+          </p>
+
+          <div class="method-list">
+            <div class="method-item">
+              <div class="method-sig">_route_cost(route, graph, limpieza_map) → int</div>
+              <p class="method-desc">Costo total de una ruta en segundos: suma traslados entre habitaciones consecutivas + tiempos de limpieza. El primer elemento solo suma su limpieza (no hay traslado previo).</p>
+            </div>
+            <div class="method-item">
+              <div class="method-sig">route_2opt(route, graph, limpieza_map) → list[str]</div>
+              <p class="method-desc">Recibe la ruta greedy y retorna la ruta optimizada. Prueba todas las inversiones de subarray [i:j+1] y aplica la que reduzca el costo. Itera hasta convergencia.</p>
+            </div>
+          </div>
+
+          <div class="code-block">
+            <span class="code-block-label">Algoritmo</span>
+            <pre><span class="cm"># Inversión de segmento [i, j]</span>
+candidate = best[:i] + best[i:j+<span class="nb">1</span>][::-<span class="nb">1</span>] + best[j+<span class="nb">1</span>:]
+cost = <span class="fn">_route_cost</span>(candidate, graph, limpieza_map)
+<span class="kw">if</span> cost &lt; best_cost:
+    best, best_cost = candidate, cost
+    improved = <span class="nb">True</span></pre>
+          </div>
+
+          <div class="callout callout-ok">
+            <strong>Impacto:</strong> el resumen detallado muestra el ahorro en minutos por empleado al comparar el costo greedy vs el costo 2-opt.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── ARCHIVOS CSV ── -->
+    <div class="section" id="csvs">
+      <span class="section-anchor"></span>
+      <div class="section-header">
+        <span class="section-num">10</span>
+        <h2>Archivos CSV</h2>
+      </div>
+
+      <!-- fleet.csv -->
+      <div class="csv-block">
+        <div class="csv-header">
+          <div class="csv-icon">FL</div>
+          <span class="csv-filename">fleet.csv</span>
+          <span class="csv-path">data\solver\dev\fleet.csv</span>
+        </div>
+        <div class="csv-body">
+          <table class="attr-table">
+            <thead>
+              <tr><th>Columna</th><th>Tipo</th><th>Descripción</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="col-name">employee_id</td><td class="col-type">str</td><td class="col-desc">Identificador único del empleado</td></tr>
+              <tr><td class="col-name">employee_name</td><td class="col-type">str</td><td class="col-desc">Nombre completo</td></tr>
+              <tr><td class="col-name">day</td><td class="col-type">str</td><td class="col-desc">day_1 (dom) … day_7 (sáb)</td></tr>
+              <tr><td class="col-name">status</td><td class="col-type">str</td><td class="col-desc">WORK | OFF | VACATION (solo se cargan WORK)</td></tr>
+              <tr><td class="col-name">shift_type</td><td class="col-type">str</td><td class="col-desc">MORNING | AFTERNOON</td></tr>
+              <tr><td class="col-name">shift_start</td><td class="col-type">str</td><td class="col-desc">Hora inicio turno HH:MM (ej. 07:00)</td></tr>
+              <tr><td class="col-name">shift_end</td><td class="col-type">str</td><td class="col-desc">Hora fin turno HH:MM (ej. 17:00)</td></tr>
+              <tr><td class="col-name">break_hour</td><td class="col-type">int</td><td class="col-desc">Hora entera de inicio de break (ej. 11 → 11:00)</td></tr>
+              <tr><td class="col-name">break_duration_minutes</td><td class="col-type">int</td><td class="col-desc">Duración del break en minutos (ej. 30)</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- reservaciones_semana.csv -->
+      <div class="csv-block">
+        <div class="csv-header">
+          <div class="csv-icon">RV</div>
+          <span class="csv-filename">reservaciones_semana.csv</span>
+          <span class="csv-path">data\solver\dev\reservaciones_semana.csv</span>
+        </div>
+        <div class="csv-body">
+          <table class="attr-table">
+            <thead>
+              <tr><th>Columna</th><th>Tipo</th><th>Descripción</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="col-name">fecha</td><td class="col-type">str</td><td class="col-desc">YYYY-MM-DD — filtro principal del día</td></tr>
+              <tr><td class="col-name">num_hab</td><td class="col-type">int</td><td class="col-desc">Código de habitación (ej. 4201)</td></tr>
+              <tr><td class="col-name">tpo_cama</td><td class="col-type">str</td><td class="col-desc">Tipo de cama para calcular tiempo de limpieza</td></tr>
+              <tr><td class="col-name">desc</td><td class="col-type">str</td><td class="col-desc">Descripción del cuarto (determina VIP)</td></tr>
+              <tr><td class="col-name">cpo</td><td class="col-type">int</td><td class="col-desc">Capacidad máxima de personas</td></tr>
+              <tr><td class="col-name">vista</td><td class="col-type">str</td><td class="col-desc">Vista de la habitación</td></tr>
+              <tr><td class="col-name">nom_hsp</td><td class="col-type">str</td><td class="col-desc">Nombre del huésped</td></tr>
+              <tr><td class="col-name">num_per</td><td class="col-type">int</td><td class="col-desc">Personas actualmente en la habitación</td></tr>
+              <tr><td class="col-name">evolucion</td><td class="col-type">str</td><td class="col-desc">CAMBIO | SALIDA | ENTRADA | PERMANENCIA | DISPONIBLE</td></tr>
+              <tr><td class="col-name">estado_fisico</td><td class="col-type">str</td><td class="col-desc">LIMPIO | SUCIO | FUERA_DE_SERVICIO</td></tr>
+              <tr><td class="col-name">ocupacion</td><td class="col-type">str</td><td class="col-desc">LIBRE | OCUPADO | EN_LIMPIEZA</td></tr>
+              <tr><td class="col-name">restriccion_huesped</td><td class="col-type">str</td><td class="col-desc">NINGUNA | DND | VENTANA_SOLICITADA</td></tr>
+              <tr><td class="col-name">ventana_inicio</td><td class="col-type">str</td><td class="col-desc">HH:MM — inicio ventana (solo si VENTANA_SOLICITADA)</td></tr>
+              <tr><td class="col-name">ventana_fin</td><td class="col-type">str</td><td class="col-desc">HH:MM — fin ventana (solo si VENTANA_SOLICITADA)</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- matriz_tiempos_limpieza.csv -->
+      <div class="csv-block">
+        <div class="csv-header">
+          <div class="csv-icon">TL</div>
+          <span class="csv-filename">matriz_tiempos_limpieza.csv</span>
+          <span class="csv-path">data\solver\matriz_tiempos_limpieza.csv</span>
+        </div>
+        <div class="csv-body">
+          <table class="attr-table">
+            <thead>
+              <tr><th>Columna</th><th>Tipo</th><th>Descripción</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="col-name">Configuración</td><td class="col-type">str</td><td class="col-desc">Clave de tipo de cama (coincide con <code>tpo_cama</code>)</td></tr>
+              <tr><td class="col-name">Tiempo Estimado (min)</td><td class="col-type">int</td><td class="col-desc">Minutos base de limpieza para ese tipo</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- matriz_traslados_segundos.csv -->
+      <div class="csv-block">
+        <div class="csv-header">
+          <div class="csv-icon">TR</div>
+          <span class="csv-filename">matriz_traslados_segundos.csv</span>
+          <span class="csv-path">data\solver\matriz_traslados_segundos.csv</span>
+        </div>
+        <div class="csv-body">
+          <table class="attr-table">
+            <thead>
+              <tr><th>Estructura</th><th>Tipo</th><th>Descripción</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="col-name">index (col 0)</td><td class="col-type">str</td><td class="col-desc">num_hab origen (ej. '4201') — cargado como index_col=0</td></tr>
+              <tr><td class="col-name">columnas</td><td class="col-type">str</td><td class="col-desc">num_hab destino — hasta 272 columnas</td></tr>
+              <tr><td class="col-name">valores</td><td class="col-type">int</td><td class="col-desc">Segundos de traslado entre origen y destino</td></tr>
+            </tbody>
+          </table>
+          <div style="padding:10px 18px;border-top:1px solid var(--tca-line);background:#fafafa;">
+            <span style="font-family:var(--mono);font-size:11.5px;color:var(--tca-muted)">
+              Formato: matriz cuadrada 272×272. El índice y las columnas son strings del num_hab.
+              Si la celda no existe, <code>HotelGraph.traslado()</code> aplica el fallback Manhattan.
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── EJEMPLO DE USO ── -->
+    <div class="section" id="uso">
+      <span class="section-anchor"></span>
+      <div class="section-header">
+        <span class="section-num">11</span>
+        <h2>Ejemplo de Uso</h2>
+      </div>
+
+      <div class="code-block">
+        <span class="code-block-label">Python — main</span>
+        <pre><span class="kw">import</span> os
+
+BASE = <span class="st">r'C:\Users\luis\Desktop\TCA\TCA-Optimization'</span>
+
+PATH_TRASLADOS     = os.path.<span class="fn">join</span>(BASE, <span class="st">'data\solver\matriz_traslados_segundos.csv'</span>)
+PATH_LIMPIEZA      = os.path.<span class="fn">join</span>(BASE, <span class="st">'data\solver\matriz_tiempos_limpieza.csv'</span>)
+PATH_RESERVACIONES = os.path.<span class="fn">join</span>(BASE, <span class="st">'data\solver\dev\reservaciones_semana.csv'</span>)
+PATH_FLEET         = os.path.<span class="fn">join</span>(BASE, <span class="st">'data\solver\dev\fleet.csv'</span>)
+
+FECHA_DIA = <span class="st">'2026-05-29'</span>   <span class="cm"># viernes — día con más check-outs</span>
+DAY_KEY   = <span class="st">'day_6'</span>        <span class="cm"># day_1=domingo … day_7=sábado</span>
+
+<span class="cm"># 1. Cargar grafo</span>
+graph = <span class="fn">HotelGraph</span>(PATH_TRASLADOS, PATH_LIMPIEZA)
+
+<span class="cm"># 2. Cargar habitaciones sucias del día</span>
+rooms = Loader.<span class="fn">desde_reservaciones</span>(PATH_RESERVACIONES, FECHA_DIA)
+
+<span class="cm"># 3. Cargar staff activo del día</span>
+staff = Loader.<span class="fn">desde_fleet</span>(PATH_FLEET, DAY_KEY)
+
+<span class="cm"># 4. Planificar (Etapa 1)</span>
+scheduler = <span class="fn">Scheduler</span>(graph)
+asignaciones = scheduler.<span class="fn">planificar</span>(rooms, staff, verbose=<span class="nb">True</span>)
+
+<span class="cm"># 5. Resumen con timestamps</span>
+df_resumen, sin_asignar = scheduler.<span class="fn">resumen_detallado</span>(staff, rooms)
+df_log = scheduler.<span class="fn">log_por_empleado</span>(staff)
+
+<span class="cm"># 6. Reparación dinámica (Etapa 2)</span>
+evento_dnd = {
+    <span class="st">'tipo'</span>:        <span class="st">'DND'</span>,
+    <span class="st">'num_hab'</span>:     <span class="st">'4201'</span>,
+    <span class="st">'timestamp_s'</span>: <span class="fn">hhmm_a_seg</span>(<span class="st">'10:00'</span>),  <span class="cm"># 36000</span>
+}
+scheduler.<span class="fn">reparar</span>(evento_dnd, staff, rooms, verbose=<span class="nb">True</span>)</pre>
+      </div>
+
+      <div class="callout callout-ok">
+        <strong>Salida esperada:</strong> tabla de priorización (top 20), resumen de 2-opt con ahorro en minutos por empleado, DataFrame resumen y log de tareas con timestamps HH:MM.
+      </div>
+    </div>
+
+  </div><!-- /content -->
+
+  <div class="doc-footer">
+    <span class="footer-brand">TCA Optimization</span>
+    <span>Motor de Ruteo v2 · Módulos 2 + 3 · mayo 2026</span>
+  </div>
+
+</main>
+</body>
+</html>
