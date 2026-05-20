@@ -40,12 +40,12 @@ Todo el motor trabaja en **segundos desde medianoche** para operar únicamente c
 
 | Versión | Tipo | Descripción |
 |---------|------|-------------|
-| **v3-1** | ✨ Nuevo | **Clarke-Wright Savings (E1-A):** Reemplaza el greedy puro. Genera rutas triviales y las fusiona por saving descendente. Produce una distribución de carga más uniforme entre empleados. |
-| **v3-2** | ✨ Nuevo | **RouteDP — Held-Karp exacto (E1-B):** DP bitmask O(2ⁿ·n²) para optimizar el orden dentro de cada ruta. Para n ≤ 20 es exacto; para n > 20 cae a 2-opt. Reduce ~8–15 % el tiempo de ruta vs 2-opt. |
-| **v3-3** | ✨ Nuevo | **VNS con 3 vecindarios (E1-C / E2):** Variable Neighborhood Search con Or-opt, Relocate y 2-opt*. Sustituye el 2-opt de v2 tanto en refinamiento post-plan como en reparación dinámica. |
-| **v3-4** | 🔧 Fix | **`StaffMember.reset_reloj()`:** Restaura el reloj y `pos_actual` al estado inicial del turno. Permite re-planificar sin reinstanciar el objeto, necesario para el fallback greedy. |
-| **v3-5** | 🔧 Fix | **`route_cost()` con pos_inicio explícito:** Corrige `_route_cost()` de v2 que omitía el traslado desde la posición inicial al primer destino. Ahora el costo refleja el makespan real completo. |
-| **v3-6** | 🔧 Fix | **`simular_ruta()` sin mutación:** Función auxiliar que verifica factibilidad de una ruta sobre un `StaffMember` sin modificar su estado interno. Usa `_pos_inicio` fijo para consistencia. |
+| **v3-1** | Nuevo | **Clarke-Wright Savings (E1-A):** Reemplaza el greedy puro. Genera rutas triviales y las fusiona por saving descendente. Produce una distribución de carga más uniforme entre empleados. |
+| **v3-2** | Nuevo | **RouteDP — Held-Karp exacto (E1-B):** DP bitmask O(2ⁿ·n²) para optimizar el orden dentro de cada ruta. Para n ≤ 20 es exacto; para n > 20 cae a 2-opt. Reduce ~8–15 % el tiempo de ruta vs 2-opt. |
+| **v3-3** | Nuevo | **VNS con 3 vecindarios (E1-C / E2):** Variable Neighborhood Search con Or-opt, Relocate y 2-opt*. Sustituye el 2-opt de v2 tanto en refinamiento post-plan como en reparación dinámica. |
+| **v3-4** | Fix | **`StaffMember.reset_reloj()`:** Restaura el reloj y `pos_actual` al estado inicial del turno. Permite re-planificar sin reinstanciar el objeto, necesario para el fallback greedy. |
+| **v3-5** | Fix | **`route_cost()` con pos_inicio explícito:** Corrige `_route_cost()` de v2 que omitía el traslado desde la posición inicial al primer destino. Ahora el costo refleja el makespan real completo. |
+| **v3-6** | Fix | **`simular_ruta()` sin mutación:** Función auxiliar que verifica factibilidad de una ruta sobre un `StaffMember` sin modificar su estado interno. Usa `_pos_inicio` fijo para consistencia. |
 
 ---
 
